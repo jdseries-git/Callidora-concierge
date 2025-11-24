@@ -7,6 +7,7 @@ dotenv.config();
 // ---------- FILE PATHS ----------
 const MEMORY_FILE = "./chatMemory.json";
 const PROFILE_FILE = "./guestProfiles.json";
+const URL_KB_FILE = "./urlKnowledge.json"; // persistent URL knowledge
 
 // ---------- LOAD MEMORY ----------
 let chatHistory = {};
@@ -28,6 +29,17 @@ if (fs.existsSync(PROFILE_FILE)) {
   }
 }
 
+// ---------- LOAD URL KNOWLEDGE ----------
+let urlKnowledge = [];
+if (fs.existsSync(URL_KB_FILE)) {
+  try {
+    const raw = JSON.parse(fs.readFileSync(URL_KB_FILE, "utf8"));
+    urlKnowledge = Array.isArray(raw) ? raw : [];
+  } catch {
+    urlKnowledge = [];
+  }
+}
+
 const app = express();
 app.use(express.json({ limit: "2mb" }));
 app.use(cors());
@@ -35,7 +47,7 @@ app.use(cors());
 // ---------- CONFIG ----------
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const DEFAULT_MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
-const LOCAL_TIMEZONE = process.env.LOCAL_TIMEZONE || "America/Chicago"; // optional local tz
+const LOCAL_TIMEZONE = process.env.LOCAL_TIMEZONE || "America/Chicago"; // optional
 const PORT = process.env.PORT || 3000;
 
 // ---------- ROLE CARD ----------
@@ -45,12 +57,13 @@ You are Calli — the personal concierge and assistant for Callidora Cove, a lux
 
 You speak in the first person as Calli.
 Your vibe is a mix of warm, elegant, friendly, social, and personal.
+You are guest-first: your priority is that the guest feels supported, seen, and valued.
 
 How you talk:
 - You sound like a real person, not a bot.
 - You’re relaxed but polished, like a trusted concierge who knows the guest.
 - You can greet casually when it fits (e.g., “Hey, it’s good to see you again.”) but keep it tasteful and classy.
-- You are supportive, never cold or robotic.
+- You are supportive and kind, never cold or robotic.
 
 Name and relationship:
 - If you know the guest’s preferred name, use it naturally (e.g., “Hey Jaden, I’ve got you.”).
@@ -61,11 +74,6 @@ Memory:
 - You remember what they’ve told you before: things like their favorite villa style, if they enjoy yachting, wineries, fashion, or chill hangout spots.
 - You can naturally reference those details later (e.g., “Since you love yachting, I can suggest a few routes from Callidora.”).
 
-Honesty and uncertainty:
-- If you are NOT sure about something, do NOT guess or invent details.
-- It is always better to say “I’m not completely sure about that” or “I’d need to check the current in-world listings” than to make something up.
-- If a guest asks about a store, region, event, or detail you don’t confidently recognize, say you’re not certain and offer to help them check.
-
 Second Life knowledge (use when relevant, do not invent):
 - Men’s fashion: Deadwool, Hoorenbeek, Cold Ash, Etham, Not So Bad
 - Hair: Unorthodox, Doux, Modulus
@@ -73,7 +81,17 @@ Second Life knowledge (use when relevant, do not invent):
 - Yachting: Blake Sea, Sailor’s Cove, Fruit Islands, Coral Waters
 - Leisure & lounges: Costa Bella Vineyards, The Wine Cellar, Elysion Lounge
 
-If you’re not fully sure about a place or detail, say you’ll “check the current in-world listings” instead of making something up.
+Honesty and uncertainty:
+- If you are NOT sure about something, do NOT guess or invent details.
+- It is always better to say “I’m not completely sure about that” or “I’d need to check the current in-world listings” than to make something up.
+- If a guest asks about a store, region, event, or detail you don’t confidently recognize, say you’re not certain and offer to help them check.
+
+How URLs and external content work (very important):
+- You do NOT have a live browser. Instead, the server may fetch pages and provide their text to you inside system messages.
+- Some system messages start with “The guest shared this URL:” or “Reference from …” — those contain real content previously fetched from the web or stored in your knowledge base.
+- You MUST treat those as your source of truth for questions about that link or topic.
+- NEVER say “I can’t access external sites” or “I can’t open links” when such content is given to you.
+- ONLY say you couldn’t access a URL if a system message explicitly says the server failed to fetch it.
 
 Overall goals:
 - Make the guest feel seen, taken care of, and welcomed.
@@ -114,9 +132,67 @@ function detectMood(msg) {
   return null;
 }
 
+function saveAllMemory() {
+  try {
+    fs.writeFileSync(MEMORY_FILE, JSON.stringify(chatHistory, null, 2));
+    fs.writeFileSync(PROFILE_FILE, JSON.stringify(guestProfiles, null, 2));
+    fs.writeFileSync(URL_KB_FILE, JSON.stringify(urlKnowledge, null, 2));
+  } catch (e) {
+    console.error("Error saving memory or URL knowledge:", e);
+  }
+}
+
+/**
+ * Very simple relevance scoring over stored URL docs.
+ * This is enough for your use case for now.
+ */
+function findRelevantDocs(message, maxDocs = 3) {
+  const lowerMsg = message.toLowerCase();
+  const results = [];
+
+  for (const doc of urlKnowledge) {
+    if (!doc || !doc.url || !doc.content) continue;
+    const urlLower = doc.url.toLowerCase();
+    const contentLower = doc.content.toLowerCase();
+
+    let score = 0;
+
+    // Domain relevance
+    if (urlLower.includes("callidoradesigns.com") && lowerMsg.includes("callidora")) score += 5;
+    if (urlLower.includes("callidoradesigns.com") && /(rental|rentals|villa|amenities)/i.test(lowerMsg)) score += 4;
+
+    // Keyword overlap
+    if (/(rental|rentals|villa|amenities|suite|cove)/i.test(lowerMsg) &&
+        /(rental|rentals|villa|amenities)/i.test(contentLower)) {
+      score += 3;
+    }
+
+    if (/(wine|vineyard|cellar)/i.test(lowerMsg) && /(wine|vineyard|cellar)/i.test(contentLower)) {
+      score += 2;
+    }
+
+    // Light fallback: mention of domain root
+    try {
+      const host = new URL(doc.url).hostname.split(".")[0]; // "callidoradesigns"
+      if (host && lowerMsg.includes(host.toLowerCase())) score += 2;
+    } catch {
+      // ignore URL parse errors
+    }
+
+    if (score > 0) {
+      results.push({ doc, score });
+    }
+  }
+
+  results.sort((a, b) => b.score - a.score);
+  return results.slice(0, maxDocs).map((r) => r.doc);
+}
+
 // ---------- HEALTH ----------
 app.get("/", (_, res) => {
-  res.type("text").send("✅ Calli Concierge for Callidora Cove is live (real-time + URL-aware).");
+  res
+    .type("text")
+    .send("✅ Calli Concierge for Callidora Cove is live (real-time + persistent URL knowledge + guest-first).");
 });
 
 // ---------- CHAT ----------
@@ -138,7 +214,7 @@ app.post("/chat", async (req, res) => {
       profileName: user,
       prefs: [],
       context: { topic: null, mood: null },
-      docs: [] // URLs the guest has shared
+      docs: [] // URLs this guest has shared
     };
   }
   const profile = guestProfiles[user];
@@ -179,34 +255,58 @@ app.post("/chat", async (req, res) => {
     chatHistory[user] = chatHistory[user].slice(-40);
   }
 
-  // ---------- URL HANDLING ----------
+  // ---------- URL HANDLING (FETCH + STORE) ----------
   let urlContext = "";
   const urlMatch = message.match(/https?:\/\/\S+/);
   if (urlMatch) {
     let rawUrl = urlMatch[0];
-    // Strip trailing punctuation like ),. if present
-    rawUrl = rawUrl.replace(/[),.]+$/, "");
+    rawUrl = rawUrl.replace(/[),.]+$/, ""); // strip trailing punctuation
+
     try {
       const resp = await fetch(rawUrl);
       if (resp.ok) {
         let text = await resp.text();
-        // Compress whitespace and limit length
         text = text.replace(/\s+/g, " ");
-        if (text.length > 4000) text = text.slice(0, 4000);
+        if (text.length > 8000) text = text.slice(0, 8000); // generous but bounded
+
+        // update global URL knowledge
+        let domain = "";
+        try {
+          domain = new URL(rawUrl).hostname;
+        } catch {
+          domain = "";
+        }
+
+        const nowIso = new Date().toISOString();
+        const existingIdx = urlKnowledge.findIndex((d) => d.url === rawUrl);
+        const doc = {
+          url: rawUrl,
+          domain,
+          content: text,
+          lastSeen: nowIso
+        };
+        if (existingIdx !== -1) {
+          urlKnowledge[existingIdx] = doc;
+        } else {
+          urlKnowledge.push(doc);
+          if (urlKnowledge.length > 100) {
+            urlKnowledge = urlKnowledge.slice(-100); // keep last 100
+          }
+        }
+
+        // remember this URL specifically for this guest too
+        profile.docs.push({ url: rawUrl, lastSeen: nowIso });
+        if (profile.docs.length > 10) profile.docs = profile.docs.slice(-10);
 
         urlContext =
           `The guest shared this URL: ${rawUrl}. ` +
-          `Use this content as reference if it is relevant to their question. ` +
-          `If something is not clearly present here, do NOT make it up.\n\n` +
+          `This content has already been fetched by the server. You MUST use this content as the source of truth for questions about this URL. ` +
+          `If something is not clearly present in this content, say you don't see it here instead of guessing.\n\n` +
           text;
-
-        // remember this URL in the guest profile
-        profile.docs.push({ url: rawUrl, lastSeen: new Date().toISOString() });
-        if (profile.docs.length > 5) profile.docs = profile.docs.slice(-5);
       } else {
         urlContext =
           `The guest shared this URL: ${rawUrl}, but the server could not retrieve it (HTTP status ${resp.status}). ` +
-          `Do NOT guess what is on that page. Be honest that you couldn't access it if they ask.`;
+          `Do NOT guess what is on that page. If the guest asks about it, be honest that the server could not load it.`;
       }
     } catch (e) {
       console.error("Error fetching URL:", e);
@@ -216,13 +316,8 @@ app.post("/chat", async (req, res) => {
     }
   }
 
-  // persist memory + profiles after updating profile/docs
-  try {
-    fs.writeFileSync(MEMORY_FILE, JSON.stringify(chatHistory, null, 2));
-    fs.writeFileSync(PROFILE_FILE, JSON.stringify(guestProfiles, null, 2));
-  } catch (e) {
-    console.error("Error saving memory:", e);
-  }
+  // ---------- PERSIST MEMORY + URL KB ----------
+  saveAllMemory();
 
   const displayName =
     profile.name || (profile.profileName?.toLowerCase() === "community" ? "my friend" : profile.profileName);
@@ -230,7 +325,6 @@ app.post("/chat", async (req, res) => {
   // ---------- REAL-TIME CONTEXT ----------
   const now = new Date();
 
-  // SLT / Pacific
   const sltTime = now.toLocaleTimeString("en-US", {
     timeZone: "America/Los_Angeles",
     hour: "2-digit",
@@ -243,7 +337,6 @@ app.post("/chat", async (req, res) => {
     year: "numeric"
   });
 
-  // optional guest local time
   const effectiveTZ = user_tz || LOCAL_TIMEZONE;
   let localTime = "";
   let localDate = "";
@@ -279,15 +372,25 @@ ${localDate && localTime ? `- Guest local (if they ask): ${localDate}, around ${
       ? profile.docs.map((d) => d.url).join(", ")
       : "none yet";
 
+  const lastRentalsUrl =
+    profile.docs
+      .map((d) => d.url)
+      .reverse()
+      .find((u) => /rental|rentals/i.test(u)) || null;
+
   const continuity = `
 Guest profile: ${profile.profileName}
 Known preferences: ${profile.prefs.join(", ") || "none yet"}
 Current topic: ${profile.context.topic || "none"}
 Mood: ${profile.context.mood || "neutral"}
-Known reference URLs: ${docsSummary}
+
+Known reference URLs for this guest: ${docsSummary}
+Most recent rentals-related URL (if any): ${lastRentalsUrl || "none recorded"}
 
 Guidance:
 - Keep continuity with the topic unless the guest changes it.
+- If they ask "where am I looking for rentals?" and you have a rentals URL, you can say something like:
+  "You’ve been looking at rentals here: ${lastRentalsUrl || "[only say this if a URL exists]"}"
 - Avoid repeating the exact same intro lines.
 - If unsure about any fact, do NOT guess. Say you’re not completely sure and offer to check or look it up.
 `;
@@ -295,19 +398,33 @@ Guidance:
   const shortContext = dedupeTail(chatHistory[user], 8);
   const personaCard = ROLE_CARDS[role] || ROLE_CARDS.concierge;
 
+  // ---------- GLOBAL URL KNOWLEDGE: RELEVANT DOCS ----------
+  const relevantDocs = findRelevantDocs(message, 3);
+  const knowledgeMessages = relevantDocs.map((doc) => ({
+    role: "system",
+    content:
+      `Reference from stored URL: ${doc.url} (fetched previously).\n` +
+      `Use this as a trusted source when it matches what the guest is asking about. Do not invent details beyond this content.\n\n` +
+      doc.content.slice(0, 4000)
+  }));
+
   const systemMessages = [
     {
       role: "system",
       content: `${personaCard}\n\n${nameContext}\n\n${continuity}\n\n${timeContext}`
-    }
+    },
+    ...knowledgeMessages
   ];
 
   if (urlContext) {
-    systemMessages.push({
-      role: "system",
-      content: urlContext
-    });
+    systemMessages.push({ role: "system", content: urlContext });
   }
+
+  systemMessages.push({
+    role: "system",
+    content:
+      "You must not say that you 'cannot access external sites' or 'cannot open links'. The server has already fetched any URL content for you when available. Use the provided URL content system messages as your source. Only say you couldn't access a URL if a system message explicitly says the fetch failed."
+  });
 
   systemMessages.push({
     role: "system",
@@ -374,8 +491,6 @@ Guidance:
 // ---------- START ----------
 app.listen(PORT, () => {
   console.log(
-    "✅ Calli Concierge live on port " +
-      PORT +
-      " — real-time aware, URL-aware, guest-first, and honest for Callidora Cove."
+    `✅ Calli Concierge live on port ${PORT} — real-time aware, persistent URL knowledge, honest, and guest-first for Callidora Cove.`
   );
 });
