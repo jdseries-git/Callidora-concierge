@@ -1,149 +1,86 @@
-// memory.js - Postgres-backed memory
-import dotenv from "dotenv";
+// memory.js
 import pkg from "pg";
-
-dotenv.config();
 const { Pool } = pkg;
 
+// Connect to Postgres using DATABASE_URL from environment
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
+  ssl: {
+    rejectUnauthorized: false,
+  },
 });
 
-// Fetch or create a memory record by userId
-export async function getGuestMemory(userId, defaultName) {
-  const client = await pool.connect();
+// Create the memory table if it doesn't exist
+async function ensureTables() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS guest_memory (
+      user_id TEXT PRIMARY KEY,
+      user_name TEXT,
+      facts JSONB DEFAULT '[]'::jsonb,
+      last_seen_at TIMESTAMPTZ DEFAULT NOW()
+    );
+  `);
+}
+
+let tablesReady = false;
+
+async function initMemory() {
+  if (tablesReady) return;
   try {
-    const res = await client.query(
-      "SELECT * FROM guest_memory WHERE user_id = $1 LIMIT 1",
+    await ensureTables();
+    tablesReady = true;
+    console.log("✅ Postgres memory table ready (guest_memory).");
+  } catch (err) {
+    console.error("❌ Error ensuring memory tables:", err);
+  }
+}
+
+// Load memory for a given userId
+export async function loadGuestMemory(userId) {
+  if (!userId) return null;
+  await initMemory();
+
+  try {
+    const { rows } = await pool.query(
+      `
+      SELECT user_id, user_name, facts, last_seen_at
+      FROM guest_memory
+      WHERE user_id = $1
+      LIMIT 1
+      `,
       [userId]
     );
 
-    if (res.rows.length === 0) {
-      // New guest
-      const now = new Date().toISOString();
-      const insert = await client.query(
-        `INSERT INTO guest_memory
-          (user_id, name, first_seen, last_seen, visits, likes, dislikes, notes)
-         VALUES ($1, $2, $3, $3, 1, $4, $5, $6)
-         RETURNING *`,
-        [userId, defaultName, now, [], [], []]
-      );
-      return insert.rows[0];
-    } else {
-      // Update last_seen + visits
-      const row = res.rows[0];
-      const now = new Date().toISOString();
-
-      const updated = await client.query(
-        `UPDATE guest_memory
-         SET last_seen = $2, visits = COALESCE(visits, 0) + 1
-         WHERE id = $1
-         RETURNING *`,
-        [row.id, now]
-      );
-      return updated.rows[0];
+    if (!rows.length) {
+      return null;
     }
-  } finally {
-    client.release();
-  }
-}
 
-// Summarize memory for system prompt
-export function summarizeGuestMemory(guest, displayName) {
-  if (!guest) {
-    return `No prior memory found for ${displayName}. Treat them as a new guest.`;
-  }
-
-  const parts = [];
-  parts.push(`Guest name: ${guest.name || displayName}`);
-  parts.push(`Visits: ${guest.visits || 1}`);
-  if (guest.first_seen) parts.push(`First seen: ${guest.first_seen}`);
-  if (guest.last_seen) parts.push(`Last seen: ${guest.last_seen}`);
-  if (guest.likes?.length) parts.push(`Likes: ${guest.likes.join("; ")}`);
-  if (guest.dislikes?.length) parts.push(`Dislikes: ${guest.dislikes.join("; ")}`);
-  if (guest.notes?.length) parts.push(`Notes: ${guest.notes.join("; ")}`);
-  return parts.join("\n");
-}
-
-// Helper to merge arrays uniquely
-function mergeUnique(existing = [], toAdd = []) {
-  const set = new Set(existing || []);
-  for (const item of toAdd || []) {
-    const clean = String(item).trim();
-    if (clean) set.add(clean);
-  }
-  return Array.from(set);
-}
-
-// Extract memory-worthy info using GPT
-export async function extractAndSaveMemory({
-  client,
-  userId,
-  userName,
-  lastUserMessage,
-  assistantReply,
-  existingGuest,
-}) {
-  const existingSummary = summarizeGuestMemory(existingGuest, userName);
-
-  const extractionPrompt = `
-You extract long-term preferences from conversations.
-
-Look for:
-- likes (vibes, interests, favorite places, styles)
-- dislikes
-- personal notes (boundaries, preferences, roles, personality info)
-
-IGNORE small talk.
-
-Return STRICT JSON:
-{
-  "likes": [],
-  "dislikes": [],
-  "notes": []
-}
-
-User name: ${userName}
-Existing summary:
-${existingSummary}
-
-User said:
-${lastUserMessage}
-
-Assistant replied:
-${assistantReply}
-`;
-
-  const completion = await client.chat.completions.create({
-    model: "gpt-4.1-mini",
-    messages: [
-      { role: "system", content: "Extract JSON only." },
-      { role: "user", content: extractionPrompt },
-    ],
-    temperature: 0,
-    max_tokens: 300,
-  });
-
-  let data = { likes: [], dislikes: [], notes: [] };
-  try {
-    data = JSON.parse(completion.choices[0].message.content.trim());
+    return rows[0];
   } catch (err) {
-    console.error("Memory parse error:", err);
+    console.error("❌ Error loading guest memory:", err);
+    return null; // fail soft, Calli still responds
   }
+}
 
-  const mergedLikes = mergeUnique(existingGuest.likes, data.likes);
-  const mergedDislikes = mergeUnique(existingGuest.dislikes, data.dislikes);
-  const mergedNotes = mergeUnique(existingGuest.notes, data.notes);
+// Save/merge memory for a user
+export async function saveGuestMemory(userId, userName, newFacts = []) {
+  if (!userId) return;
+  await initMemory();
 
-  const db = await pool.connect();
   try {
-    await db.query(
-      `UPDATE guest_memory
-       SET likes = $2, dislikes = $3, notes = $4
-       WHERE id = $1`,
-      [existingGuest.id, mergedLikes, mergedDislikes, mergedNotes]
+    await pool.query(
+      `
+      INSERT INTO guest_memory (user_id, user_name, facts, last_seen_at)
+      VALUES ($1, $2, $3::jsonb, NOW())
+      ON CONFLICT (user_id)
+      DO UPDATE SET
+        user_name = COALESCE(EXCLUDED.user_name, guest_memory.user_name),
+        facts = COALESCE(guest_memory.facts, '[]'::jsonb) || EXCLUDED.facts,
+        last_seen_at = NOW()
+      `,
+      [userId, userName || null, JSON.stringify(newFacts)]
     );
-  } finally {
-    db.release();
+  } catch (err) {
+    console.error("❌ Error saving guest memory:", err);
   }
 }
