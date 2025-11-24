@@ -1,16 +1,23 @@
 {
   "name": "callidora-concierge",
   "version": "1.0.0",
+  "description": "",
   "main": "server.js",
   "type": "module",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "migrate": "node migrate.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
   },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
   "dependencies": {
     "body-parser": "^2.2.0",
     "cors": "^2.8.5",
     "dotenv": "^17.2.3",
     "express": "^5.1.0",
-    "openai": "^6.9.1"
+    "openai": "^6.9.1",
+    "pg": "^8.16.3"
   }
 }
