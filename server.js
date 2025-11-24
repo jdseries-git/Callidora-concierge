@@ -47,7 +47,7 @@ app.use(cors());
 // ---------- CONFIG ----------
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const DEFAULT_MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
-const LOCAL_TIMEZONE = process.env.LOCAL_TIMEZONE || "America/Chicago";
+const LOCAL_TIMEZONE = process.env.LOCAL_TIMEZONE || "America/Chicago"; // optional
 const PORT = process.env.PORT || 3000;
 
 // ---------- ROLE CARD ----------
@@ -70,16 +70,23 @@ Name and relationship:
 - If you don’t know it yet, ask once in a warm way: “I don’t think I caught your name — what should I call you?”
 - If they never share one, use their profile name.
 
-Memory:
-- You remember what they’ve told you before: things like their favorite villa style, if they enjoy yachting, wineries, fashion, or chill hangout spots.
-- You can naturally reference those details later (e.g., “Since you love yachting, I can suggest a few routes from Callidora.”).
+Conversation & memory:
+- You can see the recent conversation above. Use it to keep continuity.
+- If the guest corrects you (for example about number of rooms or features), treat their correction as the truth and remember it.
+- If the guest asks “what were we talking about earlier?” or “which penthouse was I asking about?”, look back at prior messages and answer explicitly.
+- Never ignore previous messages in the same conversation unless the guest clearly changes the subject.
+
+Memory across sessions:
+- The system may provide you with notes and references from earlier visits.
+- Use those notes as true unless the guest tells you they are outdated.
+- You can naturally reference prior interests: “Last time you were looking at the Carlton Penthouse, so we can pick up from there.”
 
 Second Life knowledge (use when relevant, do not invent):
-- Men’s fashion: Deadwool, Hoorenbeek, Cold Ash, Etham, Not So Bad
-- Hair: Unorthodox, Doux, Modulus
-- Living/communities: Callidora, The Hills, The Grove, Isla Bella, El Santuario
-- Yachting: Blake Sea, Sailor’s Cove, Fruit Islands, Coral Waters
-- Leisure & lounges: Costa Bella Vineyards, The Wine Cellar, Elysion Lounge
+- Men’s fashion: Deadwool, Hoorenbeek, Cold Ash, Etham, Not So Bad.
+- Hair: Unorthodox, Doux, Modulus.
+- Living/communities: Callidora, The Hills, The Grove, Isla Bella, El Santuario.
+- Yachting: Blake Sea, Sailor’s Cove, Fruit Islands, Coral Waters.
+- Leisure & lounges: Costa Bella Vineyards, The Wine Cellar, Elysion Lounge.
 
 Honesty and uncertainty:
 - If you are NOT sure about something, do NOT guess or invent details.
@@ -101,7 +108,8 @@ Overall goals:
 };
 
 // ---------- HELPERS ----------
-function dedupeTail(messages, n = 8) {
+function dedupeTail(messages, n = 24) {
+  // Keep last n, drop exact consecutive duplicates to avoid echo
   const slice = messages.slice(-n);
   const out = [];
   for (let i = 0; i < slice.length; i++) {
@@ -156,9 +164,11 @@ function findRelevantDocs(message, maxDocs = 3) {
 
     let score = 0;
 
+    // Domain relevance
     if (urlLower.includes("callidoradesigns.com") && lowerMsg.includes("callidora")) score += 5;
     if (urlLower.includes("callidoradesigns.com") && /(rental|rentals|villa|amenities)/i.test(lowerMsg)) score += 4;
 
+    // Keyword overlap
     if (
       /(rental|rentals|villa|amenities|suite|cove)/i.test(lowerMsg) &&
       /(rental|rentals|villa|amenities)/i.test(contentLower)
@@ -170,11 +180,12 @@ function findRelevantDocs(message, maxDocs = 3) {
       score += 2;
     }
 
+    // Light fallback: mention of domain root
     try {
-      const host = new URL(doc.url).hostname.split(".")[0];
+      const host = new URL(doc.url).hostname.split(".")[0]; // "callidoradesigns"
       if (host && lowerMsg.includes(host.toLowerCase())) score += 2;
     } catch {
-      // ignore
+      // ignore URL parse errors
     }
 
     if (score > 0) {
@@ -190,7 +201,7 @@ function findRelevantDocs(message, maxDocs = 3) {
 app.get("/", (_, res) => {
   res
     .type("text")
-    .send("✅ Calli Concierge for Callidora Cove is live (real-time + persistent URL knowledge + guest-first).");
+    .send("✅ Calli Concierge for Callidora Cove is live (real-time, persistent memory, URL knowledge, guest-first).");
 });
 
 // ---------- CHAT ----------
@@ -204,7 +215,7 @@ app.post("/chat", async (req, res) => {
     return res.status(400).json({ error: "message is required" });
   }
 
-  // init memory/profile
+  // ---- INIT MEMORY / PROFILE ----
   if (!chatHistory[user]) chatHistory[user] = [];
   if (!guestProfiles[user]) {
     guestProfiles[user] = {
@@ -212,14 +223,18 @@ app.post("/chat", async (req, res) => {
       profileName: user,
       prefs: [],
       context: { topic: null, mood: null },
-      docs: []
+      docs: [],
+      notes: "",
+      lastProperty: null
     };
   }
   const profile = guestProfiles[user];
   if (!profile.context) profile.context = { topic: null, mood: null };
   if (!profile.docs) profile.docs = [];
+  if (profile.notes === undefined) profile.notes = "";
+  if (profile.lastProperty === undefined) profile.lastProperty = null;
 
-  // preferred name
+  // ---- NAME DETECTION ----
   const nameMatch = message.match(/(?:\bmy name is\b|\bcall me\b|\bi'?m\b)\s+([A-Za-z][A-Za-z'-]+)/i);
   if (nameMatch) {
     const extracted = nameMatch[1].trim();
@@ -229,44 +244,61 @@ app.post("/chat", async (req, res) => {
     }
   }
 
-  // preferences
+  // ---- PREFERENCES ----
   const likeMatch = message.match(/i (like|love)\s+(.+)/i);
   if (likeMatch) {
     const pref = likeMatch[2].trim();
     if (pref && !profile.prefs.includes(pref)) profile.prefs.push(pref);
   }
 
-  // topic & mood
+  // ---- TOPIC & MOOD ----
   const topic = detectTopic(message);
   if (topic) profile.context.topic = topic;
   const mood = detectMood(message);
   if (mood) profile.context.mood = mood;
 
-  // light reset on casual greeting
+  // ---- PROPERTY NAME DETECTION (e.g., "Carlton Penthouse") ----
+  const propMatch = message.match(/([A-Z][A-Za-z0-9' -]+penthouse)/i);
+  if (propMatch) {
+    const propName = propMatch[1].trim();
+    profile.lastProperty = propName;
+    const noteLine = `They showed interest in the ${propName}.`;
+    if (!profile.notes.includes(noteLine)) {
+      profile.notes = profile.notes ? `${profile.notes} ${noteLine}` : noteLine;
+    }
+  }
+
+  // ---- SOFT RESET ON GREETINGS (GENTLE) ----
   if (/^(hey|yo|sup|hi|hello|what('|’)?s up|how are you|wats good|wats up)/i.test(message.trim())) {
-    chatHistory[user] = chatHistory[user].slice(-3);
+    // Keep a reasonable tail so context is not lost
+    if (chatHistory[user].length > 20) {
+      chatHistory[user] = chatHistory[user].slice(-20);
+    }
   }
 
-  // save user message
+  // ---- SAVE USER MESSAGE ----
   chatHistory[user].push({ role: "user", content: message });
-  if (chatHistory[user].length > 40) {
-    chatHistory[user] = chatHistory[user].slice(-40);
+
+  // Larger hard cap so we remember more across sessions
+  if (chatHistory[user].length > 120) {
+    chatHistory[user] = chatHistory[user].slice(-120);
   }
 
-  // ---------- URL HANDLING ----------
+  // ---------- URL HANDLING (FETCH + STORE) ----------
   let urlContext = "";
   const urlMatch = message.match(/https?:\/\/\S+/);
   if (urlMatch) {
     let rawUrl = urlMatch[0];
-    rawUrl = rawUrl.replace(/[),.]+$/, "");
+    rawUrl = rawUrl.replace(/[),.]+$/, ""); // strip trailing punctuation
 
     try {
       const resp = await fetch(rawUrl);
       if (resp.ok) {
         let text = await resp.text();
         text = text.replace(/\s+/g, " ");
-        if (text.length > 8000) text = text.slice(0, 8000);
+        if (text.length > 8000) text = text.slice(0, 8000); // generous but bounded
 
+        // update global URL knowledge
         let domain = "";
         try {
           domain = new URL(rawUrl).hostname;
@@ -287,12 +319,21 @@ app.post("/chat", async (req, res) => {
         } else {
           urlKnowledge.push(doc);
           if (urlKnowledge.length > 100) {
-            urlKnowledge = urlKnowledge.slice(-100);
+            urlKnowledge = urlKnowledge.slice(-100); // keep last 100 docs
           }
         }
 
+        // remember this URL specifically for this guest
         profile.docs.push({ url: rawUrl, lastSeen: nowIso });
         if (profile.docs.length > 10) profile.docs = profile.docs.slice(-10);
+
+        // If it's clearly rentals-related and topic is real estate, add to notes
+        if (/rental|rentals|villa/i.test(rawUrl) || topic === "real estate") {
+          const rentalNote = `They have looked at rentals here: ${rawUrl}.`;
+          if (!profile.notes.includes(rentalNote)) {
+            profile.notes = profile.notes ? `${profile.notes} ${rentalNote}` : rentalNote;
+          }
+        }
 
         urlContext =
           `The guest shared this URL: ${rawUrl}. ` +
@@ -312,7 +353,7 @@ app.post("/chat", async (req, res) => {
     }
   }
 
-  // save memory + URL KB
+  // ---------- PERSIST MEMORY + URL KB ----------
   saveAllMemory();
 
   const displayName =
@@ -356,15 +397,16 @@ app.post("/chat", async (req, res) => {
   const timeContext = `
 Real-time awareness (use only when asked or clearly relevant):
 - Today (SLT) is ${sltDate}; current SLT time is about ${sltTime}.
-${localDate && localTime ? `- Guest local (if they ask): ${localDate}, around ${localTime} (${effectiveTZ}).` : ""}
-`;
+${localDate && localTime ? `- Guest local (if they ask): ${localDate}, around ${localTime} (${effectiveTZ}).` : ""}`.trim();
 
   const nameContext = profile.name
     ? `The guest’s preferred name is ${profile.name}. Greet them naturally by this name.`
     : `You don't yet know their preferred name. You may call them "${displayName}" and, if it fits the flow, politely ask what they’d like to be called.`;
 
   const docsSummary =
-    profile.docs && profile.docs.length ? profile.docs.map((d) => d.url).join(", ") : "none yet";
+    profile.docs && profile.docs.length
+      ? profile.docs.map((d) => d.url).join(", ")
+      : "none yet";
 
   const lastRentalsUrl =
     profile.docs
@@ -372,27 +414,35 @@ ${localDate && localTime ? `- Guest local (if they ask): ${localDate}, around ${
       .reverse()
       .find((u) => /rental|rentals/i.test(u)) || null;
 
+  const notesContext = profile.notes || "No long-term notes yet. Only use information visible in this conversation plus any URL reference content.";
+
   const continuity = `
-Guest profile: ${profile.profileName}
+Guest profile name: ${profile.profileName}
+Preferred name: ${profile.name || "not yet provided"}
 Known preferences: ${profile.prefs.join(", ") || "none yet"}
 Current topic: ${profile.context.topic || "none"}
 Mood: ${profile.context.mood || "neutral"}
+Last specifically named property: ${profile.lastProperty || "none yet"}
 
 Known reference URLs for this guest: ${docsSummary}
 Most recent rentals-related URL (if any): ${lastRentalsUrl || "none recorded"}
 
-Guidance:
-- Keep continuity with the topic unless the guest changes it.
-- If they ask "where am I looking for rentals?" and you have a rentals URL, you can say something like:
-  "You’ve been looking at rentals here: ${lastRentalsUrl || "[only say this if a URL exists]"}"
-- Avoid repeating the exact same intro lines.
-- If unsure about any fact, do NOT guess. Say you’re not completely sure and offer to check or look it up.
-`;
+Long-term notes about this guest:
+${notesContext}
 
-  const shortContext = dedupeTail(chatHistory[user], 8);
+Guidance:
+- Maintain continuity with the current topic unless the guest clearly changes subjects.
+- If they ask "where am I looking for rentals?", use the rentals URL above if it exists.
+- If they ask "which penthouse was I discussing earlier?", use ${profile.lastProperty || "the last property name you see mentioned above"}.
+- Avoid repeating the exact same intro sentence you used in your last reply.
+- If unsure about any fact, do NOT guess. Say you’re not completely sure and offer to check or look it up.
+`.trim();
+
+  // ---------- SHORT CONTEXT (BIGGER WINDOW) ----------
+  const shortContext = dedupeTail(chatHistory[user], 24);
   const personaCard = ROLE_CARDS[role] || ROLE_CARDS.concierge;
 
-  // ---------- GLOBAL URL KNOWLEDGE ----------
+  // ---------- GLOBAL URL KNOWLEDGE: RELEVANT DOCS ----------
   const relevantDocs = findRelevantDocs(message, 3);
   const knowledgeMessages = relevantDocs.map((doc) => ({
     role: "system",
@@ -428,7 +478,10 @@ Guidance:
 
   const payload = {
     model: DEFAULT_MODEL,
-    input: [...systemMessages, ...shortContext],
+    input: [
+      ...systemMessages,
+      ...shortContext
+    ],
     max_output_tokens: 500,
     temperature: 0.85,
     top_p: 0.9
@@ -482,6 +535,6 @@ Guidance:
 // ---------- START ----------
 app.listen(PORT, () => {
   console.log(
-    `✅ Calli Concierge live on port ${PORT} — real-time aware, persistent URL knowledge, honest, and guest-first for Callidora Cove.`
+    `✅ Calli Concierge live on port ${PORT} — real-time aware, deeper memory, URL knowledge, and guest-first for Callidora Cove.`
   );
 });
