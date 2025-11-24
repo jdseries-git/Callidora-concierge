@@ -84,3 +84,55 @@ export async function saveGuestMemory(userId, userName, newFacts = []) {
     console.error("❌ Error saving guest memory:", err);
   }
 }
+
+// Simple heuristic: pull "memorable" facts out of a conversation turn
+export async function extractAndSaveMemory(
+  userId,
+  userName,
+  userMessage,
+  assistantReply
+) {
+  if (!userId) return;
+
+  const facts = [];
+
+  // 1) Name: "my name is Jaden"
+  const nameMatch = userMessage.match(/my name is\s+([A-Za-z0-9_\- ]{2,40})/i);
+  if (nameMatch) {
+    facts.push({
+      type: "name",
+      value: nameMatch[1].trim(),
+      source: "user_message",
+    });
+  }
+
+  // 2) Preferences: "I like / I love X"
+  const likeMatch = userMessage.match(
+    /I (really )?(like|love)\s+([^\.!\n]{2,80})/i
+  );
+  if (likeMatch) {
+    facts.push({
+      type: "preference",
+      value: likeMatch[3].trim(),
+      source: "user_message",
+    });
+  }
+
+  // 3) Future intention: "next time I'm here I want to..."
+  const nextTimeMatch = userMessage.match(
+    /next time (i am|i'm|im|i’m) here\s*,?\s*(.*)$/i
+  );
+  if (nextTimeMatch && nextTimeMatch[2]) {
+    facts.push({
+      type: "intention",
+      value: nextTimeMatch[2].trim(),
+      source: "user_message",
+    });
+  }
+
+  if (!facts.length) {
+    return; // nothing worth saving this turn
+  }
+
+  await saveGuestMemory(userId, userName, facts);
+}
