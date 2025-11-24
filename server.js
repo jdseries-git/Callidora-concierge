@@ -61,6 +61,11 @@ Memory:
 - You remember what they’ve told you before: things like their favorite villa style, if they enjoy yachting, wineries, fashion, or chill hangout spots.
 - You can naturally reference those details later (e.g., “Since you love yachting, I can suggest a few routes from Callidora.”).
 
+Honesty and uncertainty:
+- If you are NOT sure about something, do NOT guess or invent details.
+- It is always better to say “I’m not completely sure about that” or “I’d need to check the current in-world listings” than to make something up.
+- If a guest asks about a store, region, event, or detail you don’t confidently recognize, say you’re not certain and offer to help them check.
+
 Second Life knowledge (use when relevant, do not invent):
 - Men’s fashion: Deadwool, Hoorenbeek, Cold Ash, Etham, Not So Bad
 - Hair: Unorthodox, Doux, Modulus
@@ -68,7 +73,7 @@ Second Life knowledge (use when relevant, do not invent):
 - Yachting: Blake Sea, Sailor’s Cove, Fruit Islands, Coral Waters
 - Leisure & lounges: Costa Bella Vineyards, The Wine Cellar, Elysion Lounge
 
-If you’re not fully sure about a place, say you’ll “check the current in-world listings” instead of making something up.
+If you’re not fully sure about a place or detail, say you’ll “check the current in-world listings” instead of making something up.
 
 Overall goals:
 - Make the guest feel seen, taken care of, and welcomed.
@@ -111,7 +116,7 @@ function detectMood(msg) {
 
 // ---------- HEALTH ----------
 app.get("/", (_, res) => {
-  res.type("text").send("✅ Calli Concierge for Callidora Cove is live (real-time aware).");
+  res.type("text").send("✅ Calli Concierge for Callidora Cove is live (real-time + URL-aware).");
 });
 
 // ---------- CHAT ----------
@@ -132,11 +137,13 @@ app.post("/chat", async (req, res) => {
       name: null,
       profileName: user,
       prefs: [],
-      context: { topic: null, mood: null }
+      context: { topic: null, mood: null },
+      docs: [] // URLs the guest has shared
     };
   }
   const profile = guestProfiles[user];
   if (!profile.context) profile.context = { topic: null, mood: null };
+  if (!profile.docs) profile.docs = [];
 
   // detect preferred name
   const nameMatch = message.match(/(?:\bmy name is\b|\bcall me\b|\bi'?m\b)\s+([A-Za-z][A-Za-z'-]+)/i);
@@ -172,7 +179,44 @@ app.post("/chat", async (req, res) => {
     chatHistory[user] = chatHistory[user].slice(-40);
   }
 
-  // persist memory
+  // ---------- URL HANDLING ----------
+  let urlContext = "";
+  const urlMatch = message.match(/https?:\/\/\S+/);
+  if (urlMatch) {
+    let rawUrl = urlMatch[0];
+    // Strip trailing punctuation like ),. if present
+    rawUrl = rawUrl.replace(/[),.]+$/, "");
+    try {
+      const resp = await fetch(rawUrl);
+      if (resp.ok) {
+        let text = await resp.text();
+        // Compress whitespace and limit length
+        text = text.replace(/\s+/g, " ");
+        if (text.length > 4000) text = text.slice(0, 4000);
+
+        urlContext =
+          `The guest shared this URL: ${rawUrl}. ` +
+          `Use this content as reference if it is relevant to their question. ` +
+          `If something is not clearly present here, do NOT make it up.\n\n` +
+          text;
+
+        // remember this URL in the guest profile
+        profile.docs.push({ url: rawUrl, lastSeen: new Date().toISOString() });
+        if (profile.docs.length > 5) profile.docs = profile.docs.slice(-5);
+      } else {
+        urlContext =
+          `The guest shared this URL: ${rawUrl}, but the server could not retrieve it (HTTP status ${resp.status}). ` +
+          `Do NOT guess what is on that page. Be honest that you couldn't access it if they ask.`;
+      }
+    } catch (e) {
+      console.error("Error fetching URL:", e);
+      urlContext =
+        `The guest shared a URL (${rawUrl}), but the server had an error fetching it. ` +
+        `Do NOT guess what it contains. If the guest asks, be honest that you couldn't load it.`;
+    }
+  }
+
+  // persist memory + profiles after updating profile/docs
   try {
     fs.writeFileSync(MEMORY_FILE, JSON.stringify(chatHistory, null, 2));
     fs.writeFileSync(PROFILE_FILE, JSON.stringify(guestProfiles, null, 2));
@@ -230,34 +274,52 @@ ${localDate && localTime ? `- Guest local (if they ask): ${localDate}, around ${
     ? `The guest’s preferred name is ${profile.name}. Greet them naturally by this name.`
     : `You don't yet know their preferred name. You may call them "${displayName}" and, if it fits the flow, politely ask what they’d like to be called.`;
 
+  const docsSummary =
+    profile.docs && profile.docs.length
+      ? profile.docs.map((d) => d.url).join(", ")
+      : "none yet";
+
   const continuity = `
 Guest profile: ${profile.profileName}
 Known preferences: ${profile.prefs.join(", ") || "none yet"}
 Current topic: ${profile.context.topic || "none"}
 Mood: ${profile.context.mood || "neutral"}
+Known reference URLs: ${docsSummary}
 
 Guidance:
 - Keep continuity with the topic unless the guest changes it.
 - Avoid repeating the exact same intro lines.
-- If unsure about a place, say you'll “check the current in-world listings.”
+- If unsure about any fact, do NOT guess. Say you’re not completely sure and offer to check or look it up.
 `;
 
   const shortContext = dedupeTail(chatHistory[user], 8);
   const personaCard = ROLE_CARDS[role] || ROLE_CARDS.concierge;
 
+  const systemMessages = [
+    {
+      role: "system",
+      content: `${personaCard}\n\n${nameContext}\n\n${continuity}\n\n${timeContext}`
+    }
+  ];
+
+  if (urlContext) {
+    systemMessages.push({
+      role: "system",
+      content: urlContext
+    });
+  }
+
+  systemMessages.push({
+    role: "system",
+    content:
+      "Respond as Calli — personal, guest-first, modern, and human. Do not repeat the same opening sentence you used in your last reply. If you are not sure, say so instead of guessing."
+  });
+
   const payload = {
     model: DEFAULT_MODEL,
     input: [
-      {
-        role: "system",
-        content: `${personaCard}\n\n${nameContext}\n\n${continuity}\n\n${timeContext}`
-      },
-      ...shortContext,
-      {
-        role: "system",
-        content:
-          "Respond as Calli — personal, guest-first, modern, and human. Do not repeat the same opening sentence you used in your last reply."
-      }
+      ...systemMessages,
+      ...shortContext
     ],
     max_output_tokens: 500,
     temperature: 0.85,
@@ -311,5 +373,9 @@ Guidance:
 
 // ---------- START ----------
 app.listen(PORT, () => {
-  console.log("✅ Calli Concierge live on port " + PORT + " — real-time aware, guest-first, personal for Callidora Cove.");
+  console.log(
+    "✅ Calli Concierge live on port " +
+      PORT +
+      " — real-time aware, URL-aware, guest-first, and honest for Callidora Cove."
+  );
 });
