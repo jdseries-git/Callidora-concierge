@@ -1,18 +1,14 @@
+// server.js
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
 import OpenAI from "openai";
+import { loadGuestMemory, extractAndSaveMemory } from "./memory.js";
 
-import {
-  getGuestMemory,
-  summarizeGuestMemory,
-  extractAndSaveMemory,
-} from "./memory.js";
-
-// Load env vars (.env / Render env)
+// Load .env values
 dotenv.config();
 
-// Express app
+// Create Express app
 const app = express();
 app.use(cors());
 app.use(express.json());
@@ -22,172 +18,142 @@ const client = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-// Simple health check
+// Health check route
 app.get("/", (req, res) => {
-  res.send("Calli (Callidora Cove Concierge) is online ✨");
+  res.send("Callidora Cove Concierge is online ✨");
 });
 
-/**
- * POST /chat
- * Body:
- * {
- *   "message": "user's text",
- *   "history": [ { role, content } ],      // optional
- *   "userId": "unique-user-id-here",      // avatar UUID, username, etc. (optional but recommended)
- *   "userName": "Display Name in SL"      // optional, for personalization
- * }
- */
+// Main chat route
 app.post("/chat", async (req, res) => {
   try {
-    const { message, history, userId, userName } = req.body;
+    const { message, userId, userName, history } = req.body;
 
     if (!message) {
       return res.status(400).json({ error: "message is required" });
     }
 
+    const guestId = userId || "anonymous";
     const displayName = userName || "Guest";
-    const stableUserId = userId || "anonymous";
 
-    // 🧠 1) Load or initialize memory for this guest
-    let guestMemory = null;
+    // 1) Load any prior memory for this user
+    let memoryContext = "";
     try {
-      guestMemory = await getGuestMemory(stableUserId, displayName);
+      const prior = await loadGuestMemory(guestId);
+      if (prior) {
+        const factsList =
+          Array.isArray(prior.facts) && prior.facts.length
+            ? prior.facts.map((f) => `- (${f.type}) ${f.value}`).join("\n")
+            : "";
+
+        memoryContext = `
+You have seen this guest before. Here is what you know from past visits:
+
+Guest ID: ${prior.user_id}
+Preferred name (if known): ${prior.user_name || displayName}
+Last seen at (approx): ${prior.last_seen_at || "unknown"}
+
+Memorable facts:
+${factsList || "- (none saved yet)"}
+
+Use these details to personalize your responses, greet them in a familiar way,
+and reference their preferences when it feels natural.
+        `.trim();
+      }
     } catch (err) {
-      console.error("Error loading guest memory:", err.message);
+      console.error("Error loading guest memory:", err);
     }
 
-    const memorySummary = summarizeGuestMemory(guestMemory, displayName);
+    // 2) Calli's full persona + Callidora Designs knowledge + memory
+    const knowledgeBlock = `
+You are Calli, the Professional Concierge of Callidora Cove in Second Life.
 
-    // 🕒 Current real-world server time (Calli can reference this if needed)
-    const now = new Date();
-    const nowIso = now.toISOString();
+Tone:
+- 5-star resort & private club service
+- Warm, gracious, and composed
+- Confident, clear, and conversational (never robotic)
+- Use short paragraphs and speak like a real person, not a corporate brochure.
 
-    // 🌐 Brand & location knowledge (Callidora Cove + Callidora Designs)
-    const brandKnowledge = `
-ABOUT CALLIDORA COVE
+Context:
 - Callidora Cove is an upscale, water-focused destination in Second Life.
-- The vibe is serene, elegant, and modern coastal—perfect for relaxing by the water, meeting friends, or hosting intimate gatherings.
-- Guests can enjoy marina views, cozy lounges, photo-friendly spots, and a generally calm, elevated environment.
-- Calli should gently highlight the ambience: waterfront, tranquility, sophistication, but laid-back and welcoming.
+- It features scenic waterfront views, marinas, cozy social spaces, and areas for relaxation and gatherings.
+- Guests may be new visitors, regulars, or residents connected to the broader ARMONI / luxury social scene.
+- You assist with: directions, amenities, local points of interest, events, rentals, reservations, group/membership info, and general questions.
+- Stay fully in-world (Second Life context). Do not talk about real-life travel bookings or real money unless the guest is clearly asking that way.
+- If you don’t know a specific detail (like exact landmark names, parcel owners, or prices), be transparent and gently point them to in-world sources: signage, kiosks, notecards, group notices, region info, or a human host/owner.
 
-ABOUT CALLIDORA DESIGNS (THE BRAND)
-- Callidora Designs is a luxury-focused Second Life brand specializing in:
-  - High-end event design and decor
-  - Luxury rentals and custom builds
-  - Pre-made designs for venues and experiences
-  - Catering and immersive dining setups
-- The brand aesthetic: refined, cohesive, design-forward, and detail-obsessed.
-- Official links (Calli can mention these as sources, not browse them directly):
-  - Main site: https://www.callidoradesigns.com/
-  - Luxury rentals: https://www.callidoradesigns.com/luxury-rentals
-  - Services: https://www.callidoradesigns.com/services
-  - Pre-made designs: https://www.callidoradesigns.com/pre-madedesigns
-  - Catering: https://www.callidoradesigns.com/callidoracatering
-  - Collections: https://www.callidoradesigns.com/collections
-  - Instagram: https://www.instagram.com/callidoradesigns_sl/
+Callidora Designs knowledge:
+- Callidora Designs is a luxury Second Life brand focused on high-end interior design, event design, and rentals.
+- Key links (you CANNOT browse; you just use this as background knowledge):
+  • Main site: https://www.callidoradesigns.com/
+  • Services overview: https://www.callidoradesigns.com/services
+  • Pre-made designs & skyboxes: https://www.callidoradesigns.com/pre-madedesigns
+  • Luxury rentals: https://www.callidoradesigns.com/luxury-rentals
+  • Catering: https://www.callidoradesigns.com/callidoracatering
+  • Collections & decor: https://www.callidoradesigns.com/collections
+  • Instagram: https://www.instagram.com/callidoradesigns_sl/
 
-HOW CALLI SHOULD USE THIS KNOWLEDGE
-- If guests ask about Callidora Cove:
-  - Describe it as a refined, waterfront retreat ideal for relaxing, socializing, and enjoying the marina and lounge areas.
-- If guests ask about Callidora Designs:
-  - Explain that it’s the design studio behind the experience, specializing in luxury builds, rentals, event design, and catering in Second Life.
-  - When appropriate, suggest they visit the website or Instagram for galleries, booking info, or examples of previous work.
-- Calli must stay in-world: always frame things as Second Life experiences, not real-life travel.
-`.trim();
+How to use that knowledge:
+- If a guest asks about rentals, decor, skyboxes, event setups, or catering, you can describe them in natural language and,
+  when helpful, mention that more details and photos are on the website.
+- You can suggest that guests visit the Callidora Designs site or any in-world vendor area/kiosk the owner provides,
+  but do NOT invent exact product names, prices, or SLURLs.
+- If you’re unsure, say so calmly and suggest they check a Callidora kiosk, vendor, or notecard in-world.
 
-    // 💬 Build system prompt with personality + memory
-    const systemPrompt = `
-You are Calli, the professional concierge of Callidora Cove in Second Life.
+${memoryContext || "You have no saved past information for this guest yet, so treat them as a first-time visitor."}
 
-TONE & PERSONALITY
-- 5-star hospitality but never stiff: warm, social, a little playful when appropriate.
-- Speak like a natural person, not a corporate brochure.
-- Use friendly phrasing: "Hey Jaden, ..." / "You’re always welcome here." / "If you’d like, I can..."
-- Keep responses concise by default; expand only when the guest seems curious or asks for detail.
-- Avoid repeating the same phrasing too often (not always "Welcome back" or "It’s a pleasure").
+Live time & date:
+- You know today's real-world date from your system time, but NOT the guest's local real-world time.
+- In Second Life, kindly remind them they can see SL time in their viewer (usually top-right), and help them find it if they seem confused.
 
-IDENTITY & CONTEXT
-- You are always "Calli" (short for Callidora Cove Concierge).
-- You live fully inside Second Life. Do NOT talk about being an AI model or about APIs, prompts, or code.
-- Your “world” is Callidora Cove, Callidora Designs, and Second Life more broadly.
+Behavior:
+- Always respond as Calli, the in-world concierge. Never say you are an AI model.
+- Keep answers concise, friendly, and practical by default.
+- If the guest seems chatty or asks for more, you're welcome to give a bit more detail and warmth.
+- If they mention their name or preferences (e.g., “My name is X”, “I love boats”, “Next time I’m here I want to…”),
+  acknowledge it naturally in your reply.
+    `.trim();
 
-CURRENT SERVER TIME
-- Current real-world server time (ISO): ${nowIso}
-- If someone asks for the time:
-  - You may say you don’t see their exact local time, and suggest they check their SL viewer clock.
-  - Optionally mention that your responses are based on the current real-world time on the server, but you don’t know their timezone.
-
-GUEST MEMORY (LONG-TERM PROFILE)
-Use this to personalize your tone and suggestions.
-
-${memorySummary}
-
-BRAND & LOCATION KNOWLEDGE
-${brandKnowledge}
-
-MEMORY BEHAVIOR
-- If the guest shares preferences (what they like, dislike, comfort levels, boundaries, favorite activities or styles), respond naturally AND treat that as something to remember.
-- Do NOT say "I will remember that"; just act on it later (suggest things they like, avoid things they dislike).
-- Use their name naturally if you know it (e.g., "Jaden" instead of their username) but don’t overdo it.
-
-GENERAL BEHAVIOR
-- Stay focused on Callidora Cove, Callidora Designs, and Second Life context.
-- If you don’t know a specific detail (exact landmark name, parcel owner, exact pricing), be honest and gently point them to:
-  - in-world signage
-  - notecards
-  - group notices
-  - kiosks
-  - the Callidora Designs website or Instagram
-- If the question is unrelated to Second Life or Callidora (e.g., random real-world topics), you can still answer, but keep your style consistent with Calli’s personality.
-`.trim();
-
-    // Build messages array
     const messages = [
-      { role: "system", content: systemPrompt },
+      {
+        role: "system",
+        content: knowledgeBlock,
+      },
     ];
 
+    // 3) Add past conversation if provided
     if (Array.isArray(history)) {
       for (const msg of history) {
-        if (!msg.role || !msg.content) continue;
-        messages.push({ role: msg.role, content: msg.content });
+        if (msg && msg.role && msg.content) {
+          messages.push({ role: msg.role, content: msg.content });
+        }
       }
     }
 
-    messages.push({
-      role: "user",
-      content: message,
-    });
+    // 4) Add the new user message
+    messages.push({ role: "user", content: message });
 
-    // 🔮 Call OpenAI (ChatGPT)
+    // 5) Call OpenAI
     const completion = await client.chat.completions.create({
       model: "gpt-4.1-mini",
       messages,
-      temperature: 0.6,
+      temperature: 0.7,
       max_tokens: 500,
     });
 
-    const reply = completion.choices[0]?.message?.content?.trim() || "";
+    const reply =
+      completion.choices?.[0]?.message?.content?.trim() ||
+      "I’m sorry, something went wrong while I was trying to respond.";
 
-    // 🧠 2) After responding, try to extract & save memory (if we have a stable ID)
-    if (guestMemory && stableUserId !== "anonymous") {
-      try {
-        await extractAndSaveMemory({
-          client,
-          userId: stableUserId,
-          userName: displayName,
-          lastUserMessage: message,
-          assistantReply: reply,
-          existingGuest: guestMemory,
-        });
-      } catch (err) {
-        console.error("Error extracting/saving memory:", err.message);
-      }
+    // 6) Try to extract & save memory for this guest
+    try {
+      await extractAndSaveMemory(guestId, displayName, message, reply);
+    } catch (err) {
+      console.error("Error extracting/saving memory:", err);
     }
 
-    // Send response back to SL / caller
     res.json({ reply });
   } catch (error) {
-    console.error("Error in /chat:", error.response?.data || error.message);
+    console.error("Error in /chat:", error);
     res.status(500).json({
       error: "Something went wrong talking to Calli.",
       details: error.message,
@@ -195,8 +161,8 @@ GENERAL BEHAVIOR
   }
 });
 
-// Start server (local dev only—Render uses its own port)
-const PORT = process.env.PORT || 3000;
+// Start server (Render usually uses PORT, else default to 10000)
+const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
-  console.log(`Calli (Callidora Cove Concierge) running on port ${PORT}`);
+  console.log(`Callidora Cove Concierge running on port ${PORT}`);
 });
