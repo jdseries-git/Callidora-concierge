@@ -10,6 +10,8 @@ const pool = new Pool({
   },
 });
 
+let tablesReady = false;
+
 // Create the memory table if it doesn't exist
 async function ensureTables() {
   await pool.query(`
@@ -21,8 +23,6 @@ async function ensureTables() {
     );
   `);
 }
-
-let tablesReady = false;
 
 async function initMemory() {
   if (tablesReady) return;
