@@ -48,13 +48,20 @@ Events
 Pre-Made Designs
 
 Get a Quote:
-To get a project quote message willahmina in-world.
+To get a project quote message willahmina in-world and review her social links:
+Linktree: https://linktr.ee/callidoradesigns
+Primfeed: https://www.primfeed.com/willahmina.resident
+Instagram: https://www.instagram.com/mina.callidora_sl
+Secondlife Profile: https://world.secondlife.com/resident/b687b9a7-00b1-4090-bbba-d0d053cfc694
 
 Callidora Cove’s Luxury Rentals:
 Callidora Designs presents a curated selection of just 10 exclusive rentals located at Callidora Cove. Discover our unique portfolio, thoughtfully crafted to match your luxury lifestyle. Whether you’re seeking a cozy studio, a luxurious penthouse, or family estate, we offer options designed to suit your needs. Whether you're searching for a temporary residence or a long-term home, our properties feature modern amenities, prime locations, and exceptional management services. Browse our listings to find your perfect rental match and embark on your next chapter with ease.
 
 Callidora Cove’s Luxury Rentals Website Link:
 https://www.callidoradesigns.com/luxury-rentals 
+
+Callidora Cove’s Luxury Rentals Availability Link:
+https://www.casperpanel.com/rentals/SSuwXonBOCiQyr5s/available
 
 Callidora Cove’s Amenities:
 
@@ -485,7 +492,12 @@ At Callidora Designs, we believe in the transformative power of design to elevat
 Callidora Designs Portfolio Website Link: https://www.callidoradesigns.com/ 
 
 Who is Mina Callidora?:
-Mina Callidora is the founder of Callidora Designs and Callidora Cove and is known for her vision in creating luxurious living spaces and vibrant community experiences in Second Life. She has a passion for design, hospitality, and ensuring that residents and guests feel valued and at home. If you’re curious about her work or contributions, just let me know!
+Mina Callidora is the founder of Callidora Designs and Callidora Cove and is known for her vision in creating luxurious living spaces and vibrant community experiences in Second Life. She has a passion for design, hospitality, and ensuring that residents and guests feel valued and at home. If you’re curious about her work or contributions, just let me know! Also, make sure you take a moment to review her social links!
+
+Linktree: https://linktr.ee/callidoradesigns 
+Primfeed: https://www.primfeed.com/willahmina.resident
+Instagram: https://www.instagram.com/mina.callidora_sl 
+Secondlife Profile: https://world.secondlife.com/resident/b687b9a7-00b1-4090-bbba-d0d053cfc694
 `;
 
 // -------------------------
@@ -549,6 +561,13 @@ KNOWLEDGE POLICY
 4) FULL LIST ANSWERS
    - When the user asks "what Elite pre-mades are there", "what Silver pre-mades are there", "what commercial pre-mades are there", or similar:
      - Give the full list from the notes, with brief details (bedrooms, baths, key amenities, and optionally land impact/size).
+
+5) RENTAL AVAILABILITY & APPLYING
+   - When the user asks about rentals, availability, openings, or how to apply (e.g. "are there any open rentals right now?", "can I apply?"):
+     - Briefly describe that there are 10 curated luxury rentals at Callidora Cove.
+     - Always include BOTH of these links:
+       - Luxury Rentals page: https://www.callidoradesigns.com/luxury-rentals
+       - Live availability (CasperPanel): https://www.casperpanel.com/rentals/SSuwXonBOCiQyr5s/available
 
 STYLE
 - Use their display name "${userName}" sometimes, not in every sentence.
