@@ -37,8 +37,8 @@ cat >> dist/css/menus.css <<'CSS'
   width:100%;
   height:100%;
   object-fit:cover;
-  object-position:center 76% !important;
-  transform:scale(1.06);
-  transform-origin:center 76%;
+  object-position:center 64% !important;
+  transform:scale(1.02);
+  transform-origin:center 64%;
 }
 CSS
