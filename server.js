@@ -7,6 +7,8 @@ import cors from "cors";
 import bodyParser from "body-parser";
 import OpenAI from "openai";
 import pg from "pg";
+import { createServer } from "http";
+import { WebSocketServer } from "ws";
 
 const app = express();
 app.use(cors());
@@ -927,12 +929,237 @@ app.post("/v1/rooms/:code/start", async (req, res) => {
 });
 
 
+
+// ===== V1 REAL-TIME RACE SERVER =====
+const v1RealtimeRooms = new Map();
+const V1_POINTS = [25,18,15,12,10,8,6,4,2,1];
+
+function v1RtSafeName(value) {
+  return String(value || "").trim().replace(/\s+/g, " ").slice(0, 80);
+}
+function v1RtSafeCode(value) {
+  return String(value || "").trim().toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 12);
+}
+function v1RtRoom(code) {
+  let room = v1RealtimeRooms.get(code);
+  if (!room) {
+    room = {
+      code, players: new Map(), expectedCount: 0, status: "waiting",
+      trackId: null, laps: 0, trackLength: 0, startAt: 0,
+      finishOrder: [], lastBroadcast: 0, createdAt: Date.now(),
+    };
+    v1RealtimeRooms.set(code, room);
+  }
+  return room;
+}
+function v1RtPublicPlayer(p) {
+  return {
+    legacyName: p.legacyName, driverId: p.driverId || null,
+    connected: !!p.connected, ready: !!p.ready, finished: !!p.finished,
+    finishPosition: p.finishPosition || null, dnf: !!p.dnf,
+    state: p.state || null,
+  };
+}
+function v1RtBroadcast(room, payload) {
+  const text = JSON.stringify(payload);
+  for (const p of room.players.values()) {
+    if (p.ws?.readyState === 1) {
+      try { p.ws.send(text); } catch {}
+    }
+  }
+}
+function v1RtSnapshot(room) {
+  return {
+    type: "snapshot", room: room.code, status: room.status,
+    startAt: room.startAt || 0, trackId: room.trackId, laps: room.laps,
+    expectedCount: room.expectedCount,
+    players: [...room.players.values()].map(v1RtPublicPlayer),
+    finishOrder: room.finishOrder.map(v1RtPublicPlayer),
+    serverNow: Date.now(),
+  };
+}
+function v1RtMaybeStart(room) {
+  if (room.status !== "waiting") return;
+  const ready = [...room.players.values()].filter(p => p.connected && p.ready).length;
+  const needed = Math.max(1, room.expectedCount || ready);
+  if (ready < needed) return;
+  room.status = "countdown";
+  room.startAt = Date.now() + 5000;
+  for (const p of room.players.values()) {
+    p.startDistance = null;
+    p.finished = false;
+    p.finishPosition = null;
+    p.dnf = false;
+  }
+  v1RtBroadcast(room, { type: "countdown", startAt: room.startAt, serverNow: Date.now(), seconds: 5 });
+  setTimeout(() => {
+    if (room.status !== "countdown") return;
+    room.status = "racing";
+    v1RtBroadcast(room, { type: "green", startAt: room.startAt, serverNow: Date.now() });
+  }, Math.max(0, room.startAt - Date.now()));
+}
+async function v1RtSubmitResult(room, player) {
+  if (player.resultSubmitted) return;
+  player.resultSubmitted = true;
+  try {
+    await fetch("https://v1-league-online.floot.app/_api/v1-result", {
+      method: "POST",
+      headers: { "Content-Type": "text/plain;charset=UTF-8" },
+      body: JSON.stringify({
+        legacyName: player.legacyName,
+        mode: "multiplayer",
+        trackId: room.trackId || "unknown",
+        score: V1_POINTS[(player.finishPosition || 99) - 1] || 0,
+        finishPosition: player.finishPosition || null,
+        fastestLapMs: player.bestLapMs || null,
+        totalTimeMs: player.finishTimeMs || null,
+        roomCode: room.code,
+      }),
+    });
+  } catch (err) {
+    console.error("V1 realtime result sync failed:", err);
+    player.resultSubmitted = false;
+  }
+}
+function v1RtFinish(room, player) {
+  if (player.finished) return;
+  player.finished = true;
+  player.finishPosition = room.finishOrder.length + 1;
+  player.finishTimeMs = Math.max(0, Date.now() - room.startAt);
+  room.finishOrder.push(player);
+  v1RtBroadcast(room, {
+    type: "finish",
+    legacyName: player.legacyName,
+    finishPosition: player.finishPosition,
+    finishTimeMs: player.finishTimeMs,
+    classification: room.finishOrder.map(v1RtPublicPlayer),
+  });
+  v1RtSubmitResult(room, player);
+  const active = [...room.players.values()].filter(p => !p.dnf);
+  if (active.length && active.every(p => p.finished)) {
+    room.status = "finished";
+    v1RtBroadcast(room, { type: "raceFinished", classification: room.finishOrder.map(v1RtPublicPlayer) });
+  }
+}
+function v1RtApplyState(room, player, raw) {
+  const now = Date.now();
+  if (!raw || typeof raw !== "object") return;
+  if (player.lastStateAt && now - player.lastStateAt < 25) return; // max ~40 Hz inbound
+  const x = Number(raw.x), y = Number(raw.y), z = Number(raw.z);
+  const heading = Number(raw.heading), v = Number(raw.v);
+  const totalDistRaw = Number(raw.totalDist);
+  if (![x,y,z,heading,v,totalDistRaw].every(Number.isFinite)) return;
+  const prev = player.state;
+  let totalDist = Math.max(0, totalDistRaw);
+  if (prev && Number.isFinite(prev.totalDist)) {
+    const dt = Math.max(0.025, Math.min(0.5, (now - player.lastStateAt) / 1000));
+    const maxAdvance = 125 * dt + 12;
+    totalDist = Math.min(totalDist, prev.totalDist + maxAdvance);
+    totalDist = Math.max(totalDist, prev.totalDist - 3);
+  }
+  player.lastStateAt = now;
+  player.bestLapMs = Number.isFinite(Number(raw.bestLapMs)) && Number(raw.bestLapMs) > 0
+    ? Math.min(player.bestLapMs || Infinity, Number(raw.bestLapMs)) : player.bestLapMs;
+  player.state = {
+    x, y, z, heading,
+    v: Math.max(-20, Math.min(120, v)),
+    steer: Number.isFinite(Number(raw.steer)) ? Math.max(-1, Math.min(1, Number(raw.steer))) : 0,
+    wheelSpin: Number.isFinite(Number(raw.wheelSpin)) ? Number(raw.wheelSpin) : 0,
+    sampleIdx: Number.isFinite(Number(raw.sampleIdx)) ? Math.max(0, Math.floor(Number(raw.sampleIdx))) : 0,
+    totalDist,
+    lap: Number.isFinite(Number(raw.lap)) ? Math.max(-1, Math.floor(Number(raw.lap))) : -1,
+    timestamp: now,
+  };
+  if (room.status === "racing") {
+    if (player.startDistance == null) player.startDistance = totalDist;
+    const target = player.startDistance + Math.max(1, room.laps) * Math.max(100, room.trackLength);
+    if (totalDist >= target) v1RtFinish(room, player);
+  }
+  if (now - room.lastBroadcast >= 45) {
+    room.lastBroadcast = now;
+    v1RtBroadcast(room, v1RtSnapshot(room));
+  }
+}
+
+const v1HttpServer = createServer(app);
+const v1Wss = new WebSocketServer({ server: v1HttpServer, path: "/v1/realtime" });
+
+v1Wss.on("connection", (ws, request) => {
+  let url;
+  try { url = new URL(request.url, "https://v1.local"); } catch { ws.close(1008, "Bad URL"); return; }
+  const code = v1RtSafeCode(url.searchParams.get("room"));
+  const legacyName = v1RtSafeName(url.searchParams.get("name"));
+  if (!code || !legacyName) { ws.close(1008, "Room and Legacy Name required"); return; }
+  const key = legacyName.toLowerCase();
+  const room = v1RtRoom(code);
+  let player = room.players.get(key);
+  if (!player) {
+    player = {
+      legacyName, key, ws, connected: true, ready: false, driverId: null,
+      state: null, lastStateAt: 0, startDistance: null,
+      finished: false, finishPosition: null, dnf: false, resultSubmitted: false,
+    };
+    room.players.set(key, player);
+  } else {
+    try { player.ws?.close(4001, "Reconnected elsewhere"); } catch {}
+    player.ws = ws; player.connected = true; player.dnf = false;
+  }
+  ws._v1 = { room, player };
+  ws.send(JSON.stringify({ type: "welcome", room: code, status: room.status, serverNow: Date.now(), startAt: room.startAt || 0 }));
+  v1RtBroadcast(room, v1RtSnapshot(room));
+
+  ws.on("message", (buffer) => {
+    let msg;
+    try { msg = JSON.parse(String(buffer)); } catch { return; }
+    if (!msg || typeof msg !== "object") return;
+    if (msg.type === "ready") {
+      player.ready = true;
+      player.driverId = String(msg.driverId || "").slice(0, 50) || null;
+      const expected = Math.max(1, Math.min(24, Number(msg.expectedCount) || 1));
+      room.expectedCount = Math.max(room.expectedCount, expected);
+      if (!room.trackId) room.trackId = String(msg.trackId || "unknown").slice(0, 50);
+      if (!room.laps) room.laps = Math.max(1, Math.min(100, Number(msg.laps) || 5));
+      if (!room.trackLength) room.trackLength = Math.max(100, Math.min(20000, Number(msg.trackLength) || 5000));
+      v1RtBroadcast(room, v1RtSnapshot(room));
+      v1RtMaybeStart(room);
+      return;
+    }
+    if (msg.type === "state") {
+      v1RtApplyState(room, player, msg.state);
+      return;
+    }
+    if (msg.type === "leave") {
+      ws.close(1000, "Left race");
+    }
+  });
+
+  ws.on("close", () => {
+    if (player.ws !== ws) return;
+    player.connected = false;
+    v1RtBroadcast(room, { type: "disconnect", legacyName: player.legacyName, graceMs: 30000 });
+    setTimeout(() => {
+      if (player.connected || player.finished) return;
+      player.dnf = true;
+      v1RtBroadcast(room, v1RtSnapshot(room));
+    }, 30000);
+  });
+});
+
+setInterval(() => {
+  const cutoff = Date.now() - 6 * 60 * 60 * 1000;
+  for (const [code, room] of v1RealtimeRooms) {
+    const anyConnected = [...room.players.values()].some(p => p.connected);
+    if (!anyConnected && room.createdAt < cutoff) v1RealtimeRooms.delete(code);
+  }
+}, 10 * 60 * 1000);
+
 // Health check
 app.get("/", (req, res) => {
   res.send("Callidora Concierge - Calli AI is running.");
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
+v1HttpServer.listen(PORT, () => {
   console.log("Server listening on port", PORT);
+  console.log("V1 realtime WebSocket ready at /v1/realtime");
 });
