@@ -28,6 +28,17 @@ NODE
 node --check dist/js/car.js
 
 cat >> dist/css/menus.css <<'CSS'
-.v1-team-art-wrap{height:165px}
-.v1-team-art{width:100%;height:100%;object-fit:cover;object-position:center 50% !important}
+/* Team-card hero crop: hide poster text and keep the car dominant */
+.v1-team-art-wrap{
+  height:165px;
+  overflow:hidden;
+}
+.v1-team-art{
+  width:100%;
+  height:100%;
+  object-fit:cover;
+  object-position:center 76% !important;
+  transform:scale(1.06);
+  transform-origin:center 76%;
+}
 CSS
