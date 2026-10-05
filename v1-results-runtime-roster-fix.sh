@@ -232,7 +232,7 @@ async function openRoom(code,name) {
         ${r.status==='started'?'<button class="v1o-btn" id="v1o-enter">ENTER RACE</button>':''}`);
       document.getElementById('v1o-copy').onclick=async()=>{await navigator.clipboard?.writeText(invite);document.getElementById('v1o-copy').textContent='COPIED';};
       document.getElementById('v1o-start')?.addEventListener('click',async()=>{await api('/v1-room-start',{method:'POST',body:JSON.stringify({code,legacyName:name})});draw();});
-      document.getElementById('v1o-enter')?.addEventListener('click',()=>{close();document.querySelector('[data-a="quick"]')?.click();});
+      document.getElementById('v1o-enter')?.addEventListener('click',()=>launchMultiplayerRace(data,name));
     } catch(e) { shell('RACE LOBBY','<p>'+esc(e.message)+'</p>'); }
   };
   await draw();
@@ -292,6 +292,250 @@ addEventListener('DOMContentLoaded',()=>{
   const q=new URLSearchParams(location.search).get('v1room');
   if(q) setTimeout(()=>multiplayer(),1200);
 });
+
+// ===== REAL-TIME ON-TRACK MULTIPLAYER =====
+const V1_RT_URL = 'wss://callidora-concierge.onrender.com/v1/realtime';
+let v1mp = null;
+
+function v1mpOverlay(text, sub='') {
+  let el=document.getElementById('v1mp-overlay');
+  if(!el){ el=document.createElement('div'); el.id='v1mp-overlay'; document.body.appendChild(el); }
+  el.innerHTML='<div class="v1mp-big">'+esc(text)+'</div>'+(sub?'<div class="v1mp-sub">'+esc(sub)+'</div>':'');
+  el.style.display='grid';
+}
+function v1mpHideOverlay(){ const el=document.getElementById('v1mp-overlay'); if(el) el.style.display='none'; }
+
+function v1mpSeed(code){
+  let h=2166136261>>>0;
+  for(const ch of String(code)){ h^=ch.charCodeAt(0); h=Math.imul(h,16777619)>>>0; }
+  return h>>>0;
+}
+
+function launchMultiplayerRace(data,name){
+  const r=data.room;
+  const config={
+    roomCode:r.code,
+    legacyName:name,
+    expectedCount:data.members.length,
+    trackId:r.track_id,
+    laps:r.laps,
+    seed:v1mpSeed(r.code),
+    previousQuali:window.__game?.ui?.settings?.quali,
+    originalRaceLapsFor:null,
+  };
+  sessionStorage.setItem('v1_multiplayer_config',JSON.stringify(config));
+  clearInterval(pollTimer);
+  close();
+  const game=window.__game;
+  if(game?.ui?.settings){
+    game.ui.settings.quali=false;
+    game.ui.saveSettings?.();
+    config.originalRaceLapsFor=game.ui.raceLapsFor;
+    game.ui.raceLapsFor=()=>config.laps;
+  }
+  const u=new URL(location.href);
+  u.searchParams.set('seed',String(config.seed));
+  history.replaceState(null,'',u);
+  document.querySelector('[data-a="quick"]')?.click();
+}
+
+function v1mpConfig(){
+  try { return JSON.parse(sessionStorage.getItem('v1_multiplayer_config')||'null'); } catch { return null; }
+}
+
+function v1mpMaybeAutoTrack(){
+  const cfg=v1mpConfig();
+  if(!cfg) return;
+  const screen=document.getElementById('screen-track');
+  if(!screen?.classList.contains('active')) return;
+  const card=screen.querySelector('.track-card[data-t="'+CSS.escape(cfg.trackId)+'"]');
+  if(card && !card.dataset.v1AutoClicked){
+    card.dataset.v1AutoClicked='1';
+    card.click();
+  }
+}
+
+function v1mpMakeRemoteStub(entry){
+  if(entry._v1RemoteStub) return;
+  entry._v1RemoteStub=true;
+  if(entry.ai){
+    entry._v1OriginalAiUpdate=entry.ai.update?.bind(entry.ai);
+    entry.ai.update=()=>({steer:0,throttle:0,brake:0,boost:false});
+  }
+  entry._v1OriginalStep=entry.phys.step?.bind(entry.phys);
+  entry.phys.step=()=>({crossedSF:0,wrongWay:false,wallHit:0,shifted:0});
+}
+
+function v1mpApplyRemote(entry,state){
+  if(!entry?.phys || !state) return;
+  const p=entry.phys;
+  const alpha=.42;
+  p.pos.x += (state.x-p.pos.x)*alpha;
+  p.pos.y += (state.y-p.pos.y)*alpha;
+  p.pos.z += (state.z-p.pos.z)*alpha;
+  const da=Math.atan2(Math.sin(state.heading-p.heading),Math.cos(state.heading-p.heading));
+  p.heading += da*alpha;
+  p.v=state.v;
+  p.steer=state.steer||0;
+  p.sampleIdx=state.sampleIdx||0;
+  p.totalDist=state.totalDist||0;
+  entry.lap=state.lap ?? entry.lap;
+  entry.wheelSpin=state.wheelSpin||entry.wheelSpin||0;
+  if(entry.mesh){
+    entry.mesh.position.set(p.pos.x,p.pos.y,p.pos.z);
+    entry.mesh.rotation.y=p.heading;
+    entry.mesh.visible=true;
+  }
+}
+
+function v1mpAssignRemoteEntries(game,snapshot){
+  if(!v1mp || !game?.session) return;
+  const me=v1mp.cfg.legacyName.toLowerCase();
+  const remotes=(snapshot.players||[]).filter(p=>p.legacyName?.toLowerCase()!==me);
+  const used=new Set();
+  for(const remote of remotes){
+    const key=remote.legacyName.toLowerCase();
+    let entry=v1mp.remoteEntries.get(key);
+    if(!entry){
+      entry=game.session.entries.find(e=>!e.isPlayer && e.driver?.id===remote.driverId && !used.has(e));
+      if(!entry) entry=game.session.entries.find(e=>!e.isPlayer && ![...v1mp.remoteEntries.values()].includes(e) && !used.has(e));
+      if(entry){
+        v1mp.remoteEntries.set(key,entry);
+        used.add(entry);
+        entry.dnf=false;
+        entry.finished=false;
+        entry.phys.disabled=false;
+        entry.mesh.visible=true;
+        entry.tag && (entry.tag.visible=false);
+        v1mpMakeRemoteStub(entry);
+      }
+    }
+  }
+  const active=new Set(v1mp.remoteEntries.values());
+  for(const e of game.session.entries){
+    if(e.isPlayer || active.has(e)) continue;
+    e.dnf=true;
+    e.phys.disabled=true;
+    if(e.mesh) e.mesh.visible=false;
+  }
+}
+
+function v1mpOfficialResults(classification){
+  const rows=(classification||[]).map((p,i)=>'<tr><td class="rank">'+(p.finishPosition||i+1)+'</td><td>'+esc(p.legacyName)+'</td><td>'+(p.dnf?'DNF':'FINISHED')+'</td></tr>').join('');
+  shell('OFFICIAL MULTIPLAYER RESULTS',
+    '<table class="v1o-table"><thead><tr><th>POS</th><th>SL LEGACY NAME</th><th>STATUS</th></tr></thead><tbody>'+rows+'</tbody></table>'+
+    '<button class="v1o-btn" id="v1o-results-menu">RETURN TO MAIN MENU</button>');
+  document.getElementById('v1o-results-menu').onclick=()=>{
+    sessionStorage.removeItem('v1_multiplayer_config');
+    v1mp?.ws?.close();
+    v1mp=null;
+    close();
+    const game=window.__game;
+    game?.teardownSession?.();
+    if(game){ game.state='menu'; game.ui.showMain(game.champ); }
+  };
+}
+
+function v1mpConnect(game,cfg){
+  if(v1mp?.ws && v1mp.cfg?.roomCode===cfg.roomCode) return;
+  const ws=new WebSocket(V1_RT_URL+'?room='+encodeURIComponent(cfg.roomCode)+'&name='+encodeURIComponent(cfg.legacyName));
+  v1mp={
+    cfg,ws,remoteEntries:new Map(),latest:new Map(),lastSend:0,green:false,
+    originalBegin:game.beginSessionFromGate.bind(game), readySent:false, lastSnapshot:null
+  };
+  game.beginSessionFromGate=()=>{
+    if(v1mp && !v1mp.green) return false;
+    return v1mp?.originalBegin ? v1mp.originalBegin() : false;
+  };
+  v1mpOverlay('CONNECTING','Joining V1 race control…');
+  ws.onopen=()=>v1mpOverlay('CONNECTED','Waiting for every driver to load the circuit…');
+  ws.onclose=()=>{ if(v1mp) v1mpOverlay('CONNECTION LOST','Attempting to preserve your race for 30 seconds…'); };
+  ws.onmessage=(ev)=>{
+    let msg; try{msg=JSON.parse(ev.data);}catch{return;}
+    if(msg.type==='snapshot'){
+      v1mp.lastSnapshot=msg;
+      for(const p of msg.players||[]) if(p.state) v1mp.latest.set(p.legacyName.toLowerCase(),p);
+      v1mpAssignRemoteEntries(game,msg);
+      const mine=(msg.players||[]).find(p=>p.legacyName?.toLowerCase()===cfg.legacyName.toLowerCase());
+      if(mine?.position) game.hud?.message?.('LIVE POSITION · P'+mine.position,'');
+    }
+    if(msg.type==='countdown'){
+      const tick=()=>{
+        if(!v1mp) return;
+        const left=Math.max(0,msg.startAt-Date.now());
+        if(left<=0){ v1mpOverlay('GO',''); return; }
+        v1mpOverlay(String(Math.max(1,Math.ceil(left/1000))),'V1 OFFICIAL START');
+        requestAnimationFrame(tick);
+      };
+      game.hud?.hideSessionReady?.();
+      tick();
+    }
+    if(msg.type==='green'){
+      v1mp.green=true;
+      v1mpHideOverlay();
+      v1mp.originalBegin();
+      if(game.session){
+        game.session.phase='racing';
+        game.session.phaseT=0;
+        game.session.raceTime=0;
+        game.session.lightsOn=0;
+        game.session.lightsOut=true;
+        for(const e of game.session.entries) e.lapStart=0;
+      }
+      game.hud?.message?.('V1 MULTIPLAYER · GREEN FLAG','green');
+    }
+    if(msg.type==='finish' && msg.legacyName?.toLowerCase()===cfg.legacyName.toLowerCase()){
+      game.hud?.message?.('OFFICIAL FINISH · P'+msg.finishPosition,'green');
+    }
+    if(msg.type==='raceFinished') v1mpOfficialResults(msg.classification);
+    if(msg.type==='disconnect') game.hud?.message?.(msg.legacyName+' disconnected · 30s reconnect window','yellow');
+  };
+}
+
+function v1mpTick(){
+  requestAnimationFrame(v1mpTick);
+  v1mpMaybeAutoTrack();
+  const cfg=v1mpConfig(), game=window.__game;
+  if(!cfg || !game) return;
+  if(game.ui?.settings){
+    game.ui.settings.quali=false;
+    if(!game.ui._v1RaceLapsPatched){
+      game.ui._v1RaceLapsPatched=true;
+      game.ui._v1OriginalRaceLapsFor=game.ui.raceLapsFor.bind(game.ui);
+      game.ui.raceLapsFor=()=>cfg.laps;
+    }
+  }
+  if(game.state!=='race' || !game.session || !game.circuit) return;
+  if(!v1mp) v1mpConnect(game,cfg);
+  if(!v1mp?.ws || v1mp.ws.readyState!==1) return;
+
+  if(!v1mp.readySent){
+    v1mp.readySent=true;
+    game.hud?.hideSessionReady?.();
+    v1mp.ws.send(JSON.stringify({
+      type:'ready', expectedCount:cfg.expectedCount, trackId:cfg.trackId, laps:cfg.laps,
+      trackLength:game.circuit.length, driverId:game.session.player?.driver?.id||game.ui?.sel?.driverId||null
+    }));
+  }
+
+  for(const [key,remote] of v1mp.latest){
+    const entry=v1mp.remoteEntries.get(key);
+    if(entry && remote.state) v1mpApplyRemote(entry,remote.state);
+  }
+
+  const now=performance.now();
+  if(now-v1mp.lastSend<50) return;
+  v1mp.lastSend=now;
+  const e=game.session.player, p=e?.phys;
+  if(!p) return;
+  v1mp.ws.send(JSON.stringify({type:'state',state:{
+    x:p.pos.x,y:p.pos.y,z:p.pos.z,heading:p.heading,v:p.v,steer:p.steer||0,
+    wheelSpin:e.wheelSpin||0,sampleIdx:p.sampleIdx||0,totalDist:p.totalDist||0,
+    lap:e.lap,bestLapMs:e.bestLap?Math.round(e.bestLap*1000):null
+  }}));
+}
+requestAnimationFrame(v1mpTick);
+
 JS
 
 cat >> dist/css/menus.css <<'CSS'
@@ -320,6 +564,9 @@ cat >> dist/css/menus.css <<'CSS'
 .v1o-stats div{padding:18px;background:#0d0c0b;border:1px solid rgba(255,255,255,.07)}.v1o-stats b{display:block;font-size:24px}.v1o-stats span{display:block;margin-top:5px;font:800 9px var(--mono,monospace);color:#999;letter-spacing:.12em}
 .v1o-roomhead{display:flex;justify-content:space-between;gap:20px;align-items:flex-start}.v1o-roomhead small{color:#B88B6C}.v1o-roomhead h3{font-size:24px;margin:3px 0}.v1o-roomhead div:last-child{text-align:right}.v1o-roomhead span{display:block;color:#999;font-size:12px;margin-top:4px}
 .v1o-copyrow{display:flex;gap:8px}.v1o-rosterlabel{margin:24px 0 8px}.v1o-roster{list-style:none;padding:0;margin:0;border-top:1px solid rgba(255,255,255,.08)}.v1o-roster li{display:flex;justify-content:space-between;padding:11px 4px;border-bottom:1px solid rgba(255,255,255,.06)}.v1o-roster b{font-size:10px;color:#D5B48B}
+#v1mp-overlay{position:fixed;inset:0;z-index:19000;display:none;place-content:center;text-align:center;pointer-events:none;background:rgba(0,0,0,.32);color:#fff;text-shadow:0 3px 18px #000}
+.v1mp-big{font:900 clamp(44px,10vw,120px)/.9 var(--font-display,Arial,sans-serif);font-style:italic;letter-spacing:-.04em}
+.v1mp-sub{margin-top:14px;font:800 12px var(--mono,monospace);letter-spacing:.18em;color:#D5B48B}
 @media(max-width:700px){.v1o-grid2,.v1o-stats{grid-template-columns:1fr 1fr}.v1o-body{padding:18px}.v1o-panel header{padding:18px}.v1o-table{font-size:11px}}
 CSS
 
