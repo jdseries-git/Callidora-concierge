@@ -24,11 +24,20 @@ car = car.replace(oldFn,newFn);
 car = car.replaceAll('emissive: 0x7adfff, emissiveMap: tex, emissiveIntensity: 0.045,',
                      'emissive: 0x000000, emissiveMap: tex, emissiveIntensity: 0.0,');
 fs.writeFileSync('dist/js/car.js',car);
+
+// Add team-specific classes so the hero crops can be tuned per card.
+let ui=fs.readFileSync('dist/js/ui.js','utf8');
+ui = ui.replace(
+  "const card = document.createElement('div'); card.className = 'select-card v1-team-card';",
+  "const card = document.createElement('div'); card.className = 'select-card v1-team-card v1-team-' + team.id;"
+);
+fs.writeFileSync('dist/js/ui.js',ui);
 NODE
 node --check dist/js/car.js
+node --check dist/js/ui.js
 
 cat >> dist/css/menus.css <<'CSS'
-/* Team-card hero crop: hide poster text and keep the car dominant */
+/* Team-card hero crop: default keeps the full car visible */
 .v1-team-art-wrap{
   height:165px;
   overflow:hidden;
@@ -40,5 +49,22 @@ cat >> dist/css/menus.css <<'CSS'
   object-position:center 64% !important;
   transform:scale(1.02);
   transform-origin:center 64%;
+}
+
+/* Per-team cleanup for embedded poster footer elements */
+.v1-team-tacn .v1-team-art{
+  object-position:center 52% !important;
+  transform:scale(1.02);
+  transform-origin:center 52%;
+}
+.v1-team-zephyr .v1-team-art{
+  object-position:center 57% !important;
+  transform:scale(1.02);
+  transform-origin:center 57%;
+}
+.v1-team-sablewood .v1-team-art{
+  object-position:center 57% !important;
+  transform:scale(1.02);
+  transform-origin:center 57%;
 }
 CSS
