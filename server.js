@@ -969,11 +969,18 @@ function v1RtBroadcast(room, payload) {
   }
 }
 function v1RtSnapshot(room) {
+  const ordered = [...room.players.values()].sort((a, b) => {
+    if (a.finished || b.finished) {
+      if (a.finished && b.finished) return (a.finishPosition || 999) - (b.finishPosition || 999);
+      return a.finished ? -1 : 1;
+    }
+    return (b.state?.totalDist || 0) - (a.state?.totalDist || 0);
+  });
   return {
     type: "snapshot", room: room.code, status: room.status,
     startAt: room.startAt || 0, trackId: room.trackId, laps: room.laps,
     expectedCount: room.expectedCount,
-    players: [...room.players.values()].map(v1RtPublicPlayer),
+    players: ordered.map((p, i) => ({ ...v1RtPublicPlayer(p), position: p.finishPosition || i + 1 })),
     finishOrder: room.finishOrder.map(v1RtPublicPlayer),
     serverNow: Date.now(),
   };
