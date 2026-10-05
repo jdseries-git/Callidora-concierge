@@ -19,3 +19,305 @@ fs.writeFileSync('dist/js/ui.js',ui);
 NODE
 node --check dist/js/data-fictional.js
 node --check dist/js/ui.js
+
+# ===== V1 ONLINE LAYER =====
+cat > dist/js/v1-online.js <<'JS'
+// Velocita One online layer: persistent SL Legacy Name profiles, live leaderboard,
+// and race-room lobby foundation. Kept separate from the race engine intentionally.
+const API = 'https://callidora-concierge.onrender.com/v1';
+const STORE = {
+  name: 'v1_legacy_name',
+  room: 'v1_room_code',
+};
+
+const esc = (s='') => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const moneyTime = (ms) => {
+  if (!ms) return '—';
+  const n = Number(ms);
+  const m = Math.floor(n/60000);
+  const sec = ((n%60000)/1000).toFixed(3).padStart(6,'0');
+  return m + ':' + sec;
+};
+const legacyName = () => (localStorage.getItem(STORE.name)||'').trim();
+const roomCode = () => (localStorage.getItem(STORE.room)||'').trim().toUpperCase();
+
+async function api(path, opts={}) {
+  const r = await fetch(API + path, {
+    ...opts,
+    headers: {'Content-Type':'application/json', ...(opts.headers||{})},
+  });
+  let body = {};
+  try { body = await r.json(); } catch {}
+  if (!r.ok) throw new Error(body.error || ('V1 service error ' + r.status));
+  return body;
+}
+
+function root() {
+  let el=document.getElementById('v1-online-root');
+  if (!el) {
+    el=document.createElement('div');
+    el.id='v1-online-root';
+    document.body.appendChild(el);
+  }
+  return el;
+}
+function close() { root().innerHTML=''; }
+
+function shell(title, body, footer='') {
+  root().innerHTML = `
+    <div class="v1o-backdrop">
+      <section class="v1o-panel" role="dialog" aria-modal="true">
+        <header><div><small>VELOCITÀ ONE · ONLINE</small><h2>${title}</h2></div><button class="v1o-x" id="v1o-x">×</button></header>
+        <div class="v1o-body">${body}</div>
+        ${footer ? '<footer>'+footer+'</footer>' : ''}
+      </section>
+    </div>`;
+  document.getElementById('v1o-x')?.addEventListener('click', close);
+}
+
+async function ensurePlayer(force=false) {
+  let name = legacyName();
+  if (!name || force) {
+    shell('DRIVER PROFILE', `
+      <p class="v1o-muted">Enter your Second Life <strong>Legacy Name</strong>. This is the permanent name used for V1 rankings and race history.</p>
+      <label class="v1o-label">SL LEGACY NAME</label>
+      <input class="v1o-input" id="v1o-name" autocomplete="off" placeholder="example Resident" value="${esc(name)}">
+      <button class="v1o-btn" id="v1o-save">CREATE / LOAD DRIVER PROFILE</button>
+      <div class="v1o-status" id="v1o-status"></div>`);
+    return await new Promise(resolve => {
+      document.getElementById('v1o-save').onclick = async () => {
+        const value = document.getElementById('v1o-name').value.trim();
+        const status = document.getElementById('v1o-status');
+        if (!value) { status.textContent='Legacy Name is required.'; return; }
+        try {
+          status.textContent='Connecting…';
+          const data = await api('/players',{method:'POST',body:JSON.stringify({legacyName:value})});
+          localStorage.setItem(STORE.name, data.player.legacy_name);
+          close();
+          resolve(data.player.legacy_name);
+        } catch(e) { status.textContent=e.message; }
+      };
+    });
+  }
+  try {
+    const data = await api('/players',{method:'POST',body:JSON.stringify({legacyName:name})});
+    localStorage.setItem(STORE.name, data.player.legacy_name);
+    return data.player.legacy_name;
+  } catch(e) {
+    shell('ONLINE SERVICE', '<p>'+esc(e.message)+'</p><button class="v1o-btn" id="v1o-retry">RETRY</button>');
+    document.getElementById('v1o-retry').onclick=()=>ensurePlayer(true);
+    throw e;
+  }
+}
+
+async function profile() {
+  const name = await ensurePlayer();
+  const data = await api('/players/'+encodeURIComponent(name));
+  shell('DRIVER PROFILE', `
+    <div class="v1o-driver">${esc(data.legacy_name)}</div>
+    <div class="v1o-stats">
+      <div><b>${data.races||0}</b><span>RACES</span></div>
+      <div><b>${data.wins||0}</b><span>WINS</span></div>
+      <div><b>${data.best_score||0}</b><span>BEST SCORE</span></div>
+      <div><b>${moneyTime(data.fastest_lap_ms)}</b><span>FASTEST LAP</span></div>
+    </div>
+    <button class="v1o-btn ghost" id="v1o-switch">CHANGE LEGACY NAME</button>`);
+  document.getElementById('v1o-switch').onclick=()=>ensurePlayer(true);
+}
+
+async function leaderboard(period='daily') {
+  await ensurePlayer();
+  shell('LIVE LEADERBOARD', '<div class="v1o-status">Loading live rankings…</div>');
+  try {
+    const data = await api('/leaderboard?period='+period+'&limit=50');
+    const rows = data.entries.map((e,i)=>`
+      <tr><td class="rank">${i+1}</td><td>${esc(e.legacy_name)}</td><td>${e.score||0}</td><td>${moneyTime(e.fastest_lap_ms)}</td></tr>`).join('');
+    shell('LIVE LEADERBOARD', `
+      <div class="v1o-tabs">
+        <button data-p="daily" class="${period==='daily'?'on':''}">TODAY</button>
+        <button data-p="weekly" class="${period==='weekly'?'on':''}">7 DAYS</button>
+        <button data-p="all" class="${period==='all'?'on':''}">ALL-TIME</button>
+      </div>
+      <table class="v1o-table"><thead><tr><th>#</th><th>SL LEGACY NAME</th><th>V1 SCORE</th><th>FASTEST LAP</th></tr></thead>
+      <tbody>${rows || '<tr><td colspan="4" class="v1o-muted">No scores yet. Be the first.</td></tr>'}</tbody></table>
+      <p class="v1o-update">AUTO-UPDATED · ${new Date(data.updatedAt).toLocaleTimeString()}</p>`);
+    document.querySelectorAll('.v1o-tabs button').forEach(b=>b.onclick=()=>leaderboard(b.dataset.p));
+  } catch(e) {
+    shell('LIVE LEADERBOARD','<p>'+esc(e.message)+'</p>');
+  }
+}
+
+async function multiplayer() {
+  const name=await ensurePlayer();
+  const codeFromUrl = new URLSearchParams(location.search).get('v1room');
+  if (codeFromUrl) {
+    localStorage.setItem(STORE.room, codeFromUrl.toUpperCase());
+    return joinRoom(codeFromUrl.toUpperCase(), name);
+  }
+  shell('MULTIPLAYER', `
+    <p class="v1o-muted">Race friends in a private V1 room or join an ARMONI-hosted event with a room link.</p>
+    <div class="v1o-grid2">
+      <button class="v1o-cardbtn" id="v1o-create"><b>CREATE PRIVATE RACE</b><span>Generate an invite link and host a lobby.</span></button>
+      <button class="v1o-cardbtn" id="v1o-join"><b>JOIN RACE</b><span>Enter a V1 room code.</span></button>
+    </div>
+    ${roomCode()?'<button class="v1o-btn ghost" id="v1o-current">OPEN CURRENT ROOM · '+esc(roomCode())+'</button>':''}`);
+  document.getElementById('v1o-create').onclick=()=>createRoom(name);
+  document.getElementById('v1o-join').onclick=()=>joinPrompt(name);
+  document.getElementById('v1o-current')?.addEventListener('click',()=>openRoom(roomCode(),name));
+}
+
+function createRoom(name) {
+  shell('CREATE PRIVATE RACE', `
+    <label class="v1o-label">RACE TITLE</label><input class="v1o-input" id="v1o-title" value="Private Race">
+    <label class="v1o-label">TRACK ID</label><input class="v1o-input" id="v1o-track" value="spa">
+    <div class="v1o-grid2"><div><label class="v1o-label">LAPS</label><input class="v1o-input" id="v1o-laps" type="number" min="1" max="100" value="5"></div>
+    <div><label class="v1o-label">MAX PLAYERS</label><input class="v1o-input" id="v1o-max" type="number" min="2" max="24" value="12"></div></div>
+    <button class="v1o-btn" id="v1o-make">CREATE RACE ROOM</button><div class="v1o-status" id="v1o-status"></div>`);
+  document.getElementById('v1o-make').onclick=async()=>{
+    const status=document.getElementById('v1o-status');
+    try {
+      status.textContent='Creating lobby…';
+      const data=await api('/rooms',{method:'POST',body:JSON.stringify({
+        legacyName:name,title:document.getElementById('v1o-title').value,
+        trackId:document.getElementById('v1o-track').value,
+        laps:+document.getElementById('v1o-laps').value,
+        maxPlayers:+document.getElementById('v1o-max').value
+      })});
+      localStorage.setItem(STORE.room,data.code);
+      openRoom(data.code,name);
+    } catch(e){status.textContent=e.message;}
+  };
+}
+function joinPrompt(name) {
+  shell('JOIN RACE', `
+    <label class="v1o-label">ROOM CODE</label><input class="v1o-input code" id="v1o-code" maxlength="8" placeholder="A8K42">
+    <button class="v1o-btn" id="v1o-go">JOIN ROOM</button><div class="v1o-status" id="v1o-status"></div>`);
+  document.getElementById('v1o-go').onclick=()=>joinRoom(document.getElementById('v1o-code').value.trim().toUpperCase(),name);
+}
+async function joinRoom(code,name) {
+  if(!code) return joinPrompt(name);
+  try {
+    await api('/rooms/'+encodeURIComponent(code)+'/join',{method:'POST',body:JSON.stringify({legacyName:name})});
+    localStorage.setItem(STORE.room,code);
+    openRoom(code,name);
+  } catch(e) {
+    shell('JOIN RACE','<p>'+esc(e.message)+'</p><button class="v1o-btn ghost" id="v1o-backmp">BACK</button>');
+    document.getElementById('v1o-backmp').onclick=multiplayer;
+  }
+}
+let pollTimer=null;
+async function openRoom(code,name) {
+  clearInterval(pollTimer);
+  const draw=async()=>{
+    try {
+      const data=await api('/rooms/'+encodeURIComponent(code));
+      const r=data.room;
+      const members=data.members.map(m=>`<li><span>${esc(m.legacy_name)}</span>${m.is_host?'<b>HOST</b>':''}</li>`).join('');
+      const host=data.members.find(m=>m.is_host)?.legacy_name?.toLowerCase()===name.toLowerCase();
+      const invite=location.origin+location.pathname+'?v1room='+encodeURIComponent(code);
+      shell('RACE LOBBY · '+esc(code), `
+        <div class="v1o-roomhead"><div><small>${esc(r.kind).toUpperCase()}</small><h3>${esc(r.title)}</h3></div><div><b>${esc(r.track_id).toUpperCase()}</b><span>${r.laps} LAPS</span></div></div>
+        <label class="v1o-label">INVITE LINK</label>
+        <div class="v1o-copyrow"><input class="v1o-input" id="v1o-link" readonly value="${esc(invite)}"><button class="v1o-btn mini" id="v1o-copy">COPY</button></div>
+        <h4 class="v1o-rosterlabel">DRIVERS · ${data.members.length}/${r.max_players}</h4>
+        <ul class="v1o-roster">${members}</ul>
+        <div class="v1o-status">STATUS · ${esc(r.status).toUpperCase()}</div>
+        ${host && r.status==='lobby'?'<button class="v1o-btn" id="v1o-start">START RACE</button>':''}
+        ${r.status==='started'?'<button class="v1o-btn" id="v1o-enter">ENTER RACE</button>':''}`);
+      document.getElementById('v1o-copy').onclick=async()=>{await navigator.clipboard?.writeText(invite);document.getElementById('v1o-copy').textContent='COPIED';};
+      document.getElementById('v1o-start')?.addEventListener('click',async()=>{await api('/rooms/'+code+'/start',{method:'POST',body:JSON.stringify({legacyName:name})});draw();});
+      document.getElementById('v1o-enter')?.addEventListener('click',()=>{close();document.querySelector('[data-a="quick"]')?.click();});
+    } catch(e) { shell('RACE LOBBY','<p>'+esc(e.message)+'</p>'); }
+  };
+  await draw();
+  pollTimer=setInterval(()=>{ if(document.getElementById('v1-online-root')?.innerHTML) draw(); else clearInterval(pollTimer); },3000);
+}
+
+// Provisional V1 score: race points are the core score; finishing higher and fastest-lap
+// performance remain visible as separate stats. This can be swapped later without changing storage.
+async function submitVisibleResult() {
+  const screen=document.getElementById('screen-results');
+  if(!screen?.classList.contains('active') || screen.dataset.v1Submitted==='1') return;
+  const name=legacyName();
+  if(!name) return;
+  const row=screen.querySelector('tr.player-row');
+  if(!row) return;
+  screen.dataset.v1Submitted='1';
+  const cells=[...row.querySelectorAll('td')];
+  const posText=cells[0]?.textContent.trim();
+  const pos=Number(posText);
+  const ptsCell=row.querySelector('.pts');
+  const score=Number(ptsCell?.textContent.trim())||0;
+  const bestCell=[...row.querySelectorAll('.ftime')].find(x=>/\d+:\d{2}\.\d{3}/.test(x.textContent));
+  let fastestLapMs=null;
+  if(bestCell){
+    const m=bestCell.textContent.match(/(\d+):(\d{2})\.(\d{3})/);
+    if(m) fastestLapMs=(+m[1]*60 + +m[2])*1000 + +m[3];
+  }
+  try {
+    await api('/results',{method:'POST',body:JSON.stringify({
+      legacyName:name,mode:'race',trackId:'unknown',score,
+      finishPosition:Number.isFinite(pos)?pos:null,fastestLapMs,roomCode:roomCode()||null
+    })});
+  } catch(e) { console.warn('V1 result sync failed',e); }
+}
+
+function injectMainButtons() {
+  const nav=document.querySelector('#screen-main.active .main-nav');
+  if(!nav || nav.querySelector('[data-v1-online]')) return;
+  const mk=(title,desc,fn)=>{
+    const b=document.createElement('button'); b.type='button'; b.className='nav-item'; b.dataset.v1Online='1';
+    b.innerHTML='<span><h3>'+title+'</h3><p>'+desc+'</p></span>'; b.onclick=fn; return b;
+  };
+  nav.appendChild(mk('MULTIPLAYER','Private races, invite links, and V1 hosted lobbies',multiplayer));
+  nav.appendChild(mk('LIVE LEADERBOARD','Daily global rankings by SL Legacy Name',()=>leaderboard('daily')));
+  nav.appendChild(mk('DRIVER PROFILE','Persistent V1 career record',profile));
+}
+
+const obs=new MutationObserver(()=>{injectMainButtons();submitVisibleResult();});
+obs.observe(document.documentElement,{subtree:true,childList:true,attributes:true,attributeFilter:['class']});
+addEventListener('DOMContentLoaded',()=>{
+  injectMainButtons();
+  const q=new URLSearchParams(location.search).get('v1room');
+  if(q) setTimeout(()=>multiplayer(),1200);
+});
+JS
+
+cat >> dist/css/menus.css <<'CSS'
+
+/* ===== V1 ONLINE ===== */
+#v1-online-root{position:relative;z-index:20000}
+.v1o-backdrop{position:fixed;inset:0;background:rgba(4,4,4,.88);backdrop-filter:blur(8px);display:grid;place-items:center;padding:24px}
+.v1o-panel{width:min(920px,94vw);max-height:90vh;overflow:auto;background:linear-gradient(145deg,#111,#17110e);border:1px solid rgba(213,180,139,.28);box-shadow:0 24px 80px rgba(0,0,0,.65);color:#F5F3EE}
+.v1o-panel header{display:flex;justify-content:space-between;align-items:center;padding:24px 28px;border-bottom:1px solid rgba(255,255,255,.08)}
+.v1o-panel header small{font:800 10px/1.2 var(--mono,monospace);letter-spacing:.18em;color:#B88B6C}
+.v1o-panel h2{margin:5px 0 0;font-size:28px;font-style:italic;letter-spacing:.03em}
+.v1o-x{background:none;border:0;color:#eee;font-size:34px;cursor:pointer}
+.v1o-body{padding:28px}.v1o-muted,.v1o-status,.v1o-update{color:#aaa;font-size:13px;line-height:1.6}
+.v1o-label{display:block;margin:18px 0 8px;font:800 10px var(--mono,monospace);letter-spacing:.15em;color:#D5B48B}
+.v1o-input{width:100%;box-sizing:border-box;padding:14px 15px;background:#0a0a0a;border:1px solid #3b2b22;color:#fff;font:700 14px var(--mono,monospace);outline:none}
+.v1o-input:focus{border-color:#9A5E3F}.v1o-input.code{text-transform:uppercase;letter-spacing:.22em;font-size:22px}
+.v1o-btn{margin-top:18px;width:100%;padding:14px 18px;border:1px solid #9A5E3F;background:#7A4828;color:#fff;font-weight:900;letter-spacing:.06em;cursor:pointer}
+.v1o-btn.ghost{background:#14110f}.v1o-btn.mini{width:auto;margin:0}.v1o-grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.v1o-cardbtn{min-height:130px;text-align:left;padding:20px;border:1px solid rgba(255,255,255,.1);background:#13110f;color:#fff;cursor:pointer}
+.v1o-cardbtn b{display:block;font-size:15px}.v1o-cardbtn span{display:block;margin-top:8px;color:#aaa;line-height:1.5}
+.v1o-cardbtn:hover{border-color:#9A5E3F;background:#1a1512}.v1o-tabs{display:flex;gap:8px;margin-bottom:16px}
+.v1o-tabs button{padding:9px 13px;border:1px solid #342820;background:#111;color:#aaa;font-weight:800;cursor:pointer}.v1o-tabs button.on{background:#7A4828;color:#fff}
+.v1o-table{width:100%;border-collapse:collapse}.v1o-table th,.v1o-table td{padding:12px 10px;border-bottom:1px solid rgba(255,255,255,.07);text-align:left}
+.v1o-table th{font:800 10px var(--mono,monospace);letter-spacing:.12em;color:#B88B6C}.v1o-table .rank{font-weight:900;color:#D5B48B}
+.v1o-driver{font-size:28px;font-weight:900}.v1o-stats{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:22px 0}
+.v1o-stats div{padding:18px;background:#0d0c0b;border:1px solid rgba(255,255,255,.07)}.v1o-stats b{display:block;font-size:24px}.v1o-stats span{display:block;margin-top:5px;font:800 9px var(--mono,monospace);color:#999;letter-spacing:.12em}
+.v1o-roomhead{display:flex;justify-content:space-between;gap:20px;align-items:flex-start}.v1o-roomhead small{color:#B88B6C}.v1o-roomhead h3{font-size:24px;margin:3px 0}.v1o-roomhead div:last-child{text-align:right}.v1o-roomhead span{display:block;color:#999;font-size:12px;margin-top:4px}
+.v1o-copyrow{display:flex;gap:8px}.v1o-rosterlabel{margin:24px 0 8px}.v1o-roster{list-style:none;padding:0;margin:0;border-top:1px solid rgba(255,255,255,.08)}.v1o-roster li{display:flex;justify-content:space-between;padding:11px 4px;border-bottom:1px solid rgba(255,255,255,.06)}.v1o-roster b{font-size:10px;color:#D5B48B}
+@media(max-width:700px){.v1o-grid2,.v1o-stats{grid-template-columns:1fr 1fr}.v1o-body{padding:18px}.v1o-panel header{padding:18px}.v1o-table{font-size:11px}}
+CSS
+
+node - <<'NODE'
+const fs=require('fs');
+const f='dist/index.html';
+let x=fs.readFileSync(f,'utf8');
+if(!x.includes('js/v1-online.js')){
+  x=x.replace('</body>','<script type="module" src="js/v1-online.js"></script>\n</body>');
+}
+fs.writeFileSync(f,x);
+NODE
