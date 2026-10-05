@@ -125,7 +125,9 @@ async function profile() {
   document.getElementById('v1o-switch').onclick=()=>ensurePlayer(true);
 }
 
+let leaderboardTimer=null;
 async function leaderboard(period='daily') {
+  clearTimeout(leaderboardTimer);
   await ensurePlayer();
   shell('LIVE LEADERBOARD', '<div class="v1o-status">Loading live rankings…</div>');
   try {
@@ -142,6 +144,10 @@ async function leaderboard(period='daily') {
       <tbody>${rows || '<tr><td colspan="4" class="v1o-muted">No scores yet. Be the first.</td></tr>'}</tbody></table>
       <p class="v1o-update">AUTO-UPDATED · ${new Date(data.updatedAt).toLocaleTimeString()}</p>`);
     document.querySelectorAll('.v1o-tabs button').forEach(b=>b.onclick=()=>leaderboard(b.dataset.p));
+    leaderboardTimer=setTimeout(()=>{
+      const panel=document.querySelector('#v1-online-root .v1o-panel');
+      if(panel && panel.textContent.includes('LIVE LEADERBOARD')) leaderboard(period);
+    },10000);
   } catch(e) {
     shell('LIVE LEADERBOARD','<p>'+esc(e.message)+'</p>');
   }
@@ -274,7 +280,12 @@ function injectMainButtons() {
   nav.appendChild(mk('DRIVER PROFILE','Persistent V1 career record',profile));
 }
 
-const obs=new MutationObserver(()=>{injectMainButtons();submitVisibleResult();});
+const obs=new MutationObserver(()=>{
+  injectMainButtons();
+  const rs=document.getElementById('screen-results');
+  if(rs && !rs.classList.contains('active')) delete rs.dataset.v1Submitted;
+  submitVisibleResult();
+});
 obs.observe(document.documentElement,{subtree:true,childList:true,attributes:true,attributeFilter:['class']});
 addEventListener('DOMContentLoaded',()=>{
   injectMainButtons();
