@@ -53,9 +53,9 @@ cat >> dist/css/menus.css <<'CSS'
 
 /* Per-team cleanup for embedded poster footer elements */
 .v1-team-tacn .v1-team-art{
-  object-position:center 52% !important;
-  transform:scale(1.02);
-  transform-origin:center 52%;
+  object-position:center 55% !important;
+  transform:scale(1.06);
+  transform-origin:center 55%;
 }
 .v1-team-zephyr .v1-team-art{
   object-position:center 57% !important;
@@ -66,5 +66,10 @@ cat >> dist/css/menus.css <<'CSS'
   object-position:center 57% !important;
   transform:scale(1.02);
   transform-origin:center 57%;
+}
+.v1-team-solaris .v1-team-art{
+  object-position:center 58% !important;
+  transform:scale(1.02);
+  transform-origin:center 58%;
 }
 CSS
