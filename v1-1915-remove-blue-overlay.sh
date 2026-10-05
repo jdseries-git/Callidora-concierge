@@ -3,8 +3,6 @@ const fs=require('fs');
 let car=fs.readFileSync('dist/js/car.js','utf8');
 
 // Remove the legacy TACN shoulder-deck overlay entirely.
-// That texture hard-codes electric cyan/blue spears and is the source
-// of the blue panels still appearing on the 1915 car.
 const oldFn = `function addTacnDeckLivery(body, team, drv, y) {
   if (team.id !== 'tacn') return null;
   const deck = new THREE.Mesh(PLANE(), tacnDeckM(drv));
@@ -18,19 +16,18 @@ const oldFn = `function addTacnDeckLivery(body, team, drv, y) {
 }`;
 
 const newFn = `function addTacnDeckLivery(body, team, drv, y) {
-  // V1 / 1915 no longer uses the legacy TACN cyan shoulder-deck graphic.
-  // Keep the hook for compatibility, but render no extra overlay.
   return null;
 }`;
 
 if (!car.includes(oldFn)) throw new Error('legacy TACN deck livery function not found');
 car = car.replace(oldFn,newFn);
-
-// Neutralize the legacy TACN deck material too, so even an unexpected caller
-// cannot reintroduce a blue emissive tint.
 car = car.replaceAll('emissive: 0x7adfff, emissiveMap: tex, emissiveIntensity: 0.045,',
                      'emissive: 0x000000, emissiveMap: tex, emissiveIntensity: 0.0,');
-
 fs.writeFileSync('dist/js/car.js',car);
 NODE
 node --check dist/js/car.js
+
+cat >> dist/css/menus.css <<'CSS'
+.v1-team-art-wrap{height:165px}
+.v1-team-art{width:100%;height:100%;object-fit:cover;object-position:center 50% !important}
+CSS
