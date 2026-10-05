@@ -6,6 +6,7 @@ import express from "express";
 import cors from "cors";
 import bodyParser from "body-parser";
 import OpenAI from "openai";
+import pg from "pg";
 
 const app = express();
 app.use(cors());
@@ -631,6 +632,300 @@ app.post("/chat", async (req, res) => {
       .json({ reply: "I'm sorry — something went wrong on my server." });
   }
 });
+
+
+// ===== V1 LEAGUE DATA API =====
+const { Pool } = pg;
+const v1Pool = process.env.DATABASE_URL
+  ? new Pool({
+      connectionString: process.env.DATABASE_URL,
+      ssl: process.env.DATABASE_URL.includes("localhost") ? false : { rejectUnauthorized: false },
+    })
+  : null;
+
+const v1LegacyName = (value) => String(value || "").trim().replace(/\s+/g, " ").slice(0, 80);
+const v1LegacyKey = (value) => v1LegacyName(value).toLowerCase();
+const v1RoomCode = () => Math.random().toString(36).slice(2, 8).toUpperCase();
+
+async function v1Init() {
+  if (!v1Pool) {
+    console.warn("V1 API disabled: DATABASE_URL is not configured.");
+    return;
+  }
+  await v1Pool.query(`
+    CREATE TABLE IF NOT EXISTS v1_players (
+      id BIGSERIAL PRIMARY KEY,
+      legacy_name TEXT NOT NULL,
+      legacy_key TEXT NOT NULL UNIQUE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS v1_results (
+      id BIGSERIAL PRIMARY KEY,
+      player_id BIGINT NOT NULL REFERENCES v1_players(id) ON DELETE CASCADE,
+      mode TEXT NOT NULL DEFAULT 'quick',
+      track_id TEXT NOT NULL DEFAULT 'unknown',
+      score INTEGER NOT NULL DEFAULT 0,
+      finish_position INTEGER,
+      fastest_lap_ms INTEGER,
+      total_time_ms INTEGER,
+      room_code TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS v1_results_player_idx ON v1_results(player_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS v1_results_score_idx ON v1_results(score DESC, created_at DESC);
+    CREATE INDEX IF NOT EXISTS v1_results_created_idx ON v1_results(created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS v1_rooms (
+      code TEXT PRIMARY KEY,
+      host_player_id BIGINT NOT NULL REFERENCES v1_players(id) ON DELETE CASCADE,
+      kind TEXT NOT NULL DEFAULT 'private',
+      title TEXT NOT NULL DEFAULT 'Private Race',
+      track_id TEXT NOT NULL,
+      laps INTEGER NOT NULL DEFAULT 5,
+      max_players INTEGER NOT NULL DEFAULT 12,
+      status TEXT NOT NULL DEFAULT 'lobby',
+      settings JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      started_at TIMESTAMPTZ,
+      finished_at TIMESTAMPTZ
+    );
+
+    CREATE TABLE IF NOT EXISTS v1_room_members (
+      room_code TEXT NOT NULL REFERENCES v1_rooms(code) ON DELETE CASCADE,
+      player_id BIGINT NOT NULL REFERENCES v1_players(id) ON DELETE CASCADE,
+      is_host BOOLEAN NOT NULL DEFAULT FALSE,
+      status TEXT NOT NULL DEFAULT 'joined',
+      joined_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (room_code, player_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS v1_championships (
+      id BIGSERIAL PRIMARY KEY,
+      slug TEXT NOT NULL UNIQUE,
+      title TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'draft',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS v1_championship_rounds (
+      id BIGSERIAL PRIMARY KEY,
+      championship_id BIGINT NOT NULL REFERENCES v1_championships(id) ON DELETE CASCADE,
+      round_number INTEGER NOT NULL,
+      room_code TEXT REFERENCES v1_rooms(code) ON DELETE SET NULL,
+      track_id TEXT NOT NULL,
+      laps INTEGER NOT NULL DEFAULT 5,
+      UNIQUE(championship_id, round_number)
+    );
+  `);
+  console.log("V1 League data tables ready.");
+}
+v1Init().catch((err) => console.error("V1 database init failed:", err));
+
+async function v1UpsertPlayer(legacyName) {
+  const name = v1LegacyName(legacyName);
+  if (!name) throw new Error("SL Legacy Name is required");
+  const key = v1LegacyKey(name);
+  const { rows } = await v1Pool.query(
+    `INSERT INTO v1_players (legacy_name, legacy_key)
+     VALUES ($1, $2)
+     ON CONFLICT (legacy_key)
+     DO UPDATE SET legacy_name = EXCLUDED.legacy_name, last_seen_at = NOW()
+     RETURNING *`,
+    [name, key]
+  );
+  return rows[0];
+}
+
+app.get("/v1/health", async (req, res) => {
+  if (!v1Pool) return res.status(503).json({ ok: false, database: false });
+  try {
+    await v1Pool.query("SELECT 1");
+    res.json({ ok: true, database: true });
+  } catch (err) {
+    res.status(503).json({ ok: false, database: false });
+  }
+});
+
+app.post("/v1/players", async (req, res) => {
+  if (!v1Pool) return res.status(503).json({ error: "Database unavailable" });
+  try {
+    const player = await v1UpsertPlayer(req.body?.legacyName);
+    const { rows } = await v1Pool.query(
+      `SELECT COUNT(*)::int AS races,
+              COALESCE(MAX(score),0)::int AS best_score,
+              COUNT(*) FILTER (WHERE finish_position = 1)::int AS wins,
+              MIN(fastest_lap_ms) FILTER (WHERE fastest_lap_ms > 0)::int AS fastest_lap_ms
+       FROM v1_results WHERE player_id=$1`,
+      [player.id]
+    );
+    res.json({ player, stats: rows[0] });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.get("/v1/players/:legacyName", async (req, res) => {
+  if (!v1Pool) return res.status(503).json({ error: "Database unavailable" });
+  const key = v1LegacyKey(req.params.legacyName);
+  const { rows } = await v1Pool.query(
+    `SELECT p.*,
+            COUNT(r.id)::int AS races,
+            COALESCE(MAX(r.score),0)::int AS best_score,
+            COUNT(r.id) FILTER (WHERE r.finish_position=1)::int AS wins,
+            MIN(r.fastest_lap_ms) FILTER (WHERE r.fastest_lap_ms > 0)::int AS fastest_lap_ms
+     FROM v1_players p
+     LEFT JOIN v1_results r ON r.player_id=p.id
+     WHERE p.legacy_key=$1
+     GROUP BY p.id`,
+    [key]
+  );
+  if (!rows.length) return res.status(404).json({ error: "Player not found" });
+  res.json(rows[0]);
+});
+
+app.post("/v1/results", async (req, res) => {
+  if (!v1Pool) return res.status(503).json({ error: "Database unavailable" });
+  try {
+    const player = await v1UpsertPlayer(req.body?.legacyName);
+    const {
+      mode = "quick", trackId = "unknown", score = 0, finishPosition = null,
+      fastestLapMs = null, totalTimeMs = null, roomCode = null,
+    } = req.body || {};
+    const { rows } = await v1Pool.query(
+      `INSERT INTO v1_results
+        (player_id, mode, track_id, score, finish_position, fastest_lap_ms, total_time_ms, room_code)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+       RETURNING *`,
+      [
+        player.id, String(mode).slice(0,30), String(trackId).slice(0,50),
+        Math.max(0, Number(score)||0), finishPosition ? Number(finishPosition) : null,
+        fastestLapMs ? Number(fastestLapMs) : null, totalTimeMs ? Number(totalTimeMs) : null,
+        roomCode ? String(roomCode).slice(0,12).toUpperCase() : null,
+      ]
+    );
+    res.status(201).json({ result: rows[0] });
+  } catch (err) {
+    console.error("V1 result error:", err);
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.get("/v1/leaderboard", async (req, res) => {
+  if (!v1Pool) return res.status(503).json({ error: "Database unavailable" });
+  const period = ["daily","weekly","all"].includes(req.query.period) ? req.query.period : "daily";
+  const limit = Math.min(100, Math.max(1, Number(req.query.limit)||50));
+  const where = period === "daily"
+    ? `r.created_at >= (date_trunc('day', NOW() AT TIME ZONE 'America/Los_Angeles') AT TIME ZONE 'America/Los_Angeles')`
+    : period === "weekly" ? `r.created_at >= NOW() - INTERVAL '7 days'` : "TRUE";
+  const { rows } = await v1Pool.query(
+    `SELECT p.legacy_name,
+            MAX(r.score)::int AS score,
+            COUNT(r.id)::int AS races,
+            MIN(r.fastest_lap_ms) FILTER (WHERE r.fastest_lap_ms > 0)::int AS fastest_lap_ms
+     FROM v1_results r
+     JOIN v1_players p ON p.id=r.player_id
+     WHERE ${where}
+     GROUP BY p.id, p.legacy_name
+     ORDER BY score DESC, fastest_lap_ms ASC NULLS LAST
+     LIMIT $1`,
+    [limit]
+  );
+  res.json({ period, updatedAt: new Date().toISOString(), entries: rows });
+});
+
+app.post("/v1/rooms", async (req, res) => {
+  if (!v1Pool) return res.status(503).json({ error: "Database unavailable" });
+  try {
+    const host = await v1UpsertPlayer(req.body?.legacyName);
+    const kind = req.body?.kind === "official" ? "official" : "private";
+    const trackId = String(req.body?.trackId || "spa").slice(0,50);
+    const laps = Math.min(100, Math.max(1, Number(req.body?.laps)||5));
+    const maxPlayers = Math.min(24, Math.max(2, Number(req.body?.maxPlayers)||12));
+    let code = v1RoomCode();
+    for (let i=0;i<5;i++) {
+      const exists = await v1Pool.query("SELECT 1 FROM v1_rooms WHERE code=$1", [code]);
+      if (!exists.rowCount) break;
+      code = v1RoomCode();
+    }
+    const title = String(req.body?.title || (kind === "official" ? "V1 Official Race" : "Private Race")).slice(0,100);
+    await v1Pool.query("BEGIN");
+    try {
+      await v1Pool.query(
+        `INSERT INTO v1_rooms(code,host_player_id,kind,title,track_id,laps,max_players,settings)
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8::jsonb)`,
+        [code,host.id,kind,title,trackId,laps,maxPlayers,JSON.stringify(req.body?.settings || {})]
+      );
+      await v1Pool.query(
+        "INSERT INTO v1_room_members(room_code,player_id,is_host) VALUES($1,$2,TRUE)",
+        [code,host.id]
+      );
+      await v1Pool.query("COMMIT");
+    } catch (e) {
+      await v1Pool.query("ROLLBACK");
+      throw e;
+    }
+    res.status(201).json({ code, joinUrl: `${req.get("origin") || ""}/?v1room=${code}` });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.post("/v1/rooms/:code/join", async (req, res) => {
+  if (!v1Pool) return res.status(503).json({ error: "Database unavailable" });
+  try {
+    const code = String(req.params.code).toUpperCase();
+    const player = await v1UpsertPlayer(req.body?.legacyName);
+    const room = await v1Pool.query("SELECT * FROM v1_rooms WHERE code=$1", [code]);
+    if (!room.rowCount) return res.status(404).json({ error: "Race room not found" });
+    if (room.rows[0].status !== "lobby") return res.status(409).json({ error: "Race has already started" });
+    const count = await v1Pool.query("SELECT COUNT(*)::int AS n FROM v1_room_members WHERE room_code=$1", [code]);
+    if (count.rows[0].n >= room.rows[0].max_players) return res.status(409).json({ error: "Race room is full" });
+    await v1Pool.query(
+      `INSERT INTO v1_room_members(room_code,player_id)
+       VALUES($1,$2) ON CONFLICT(room_code,player_id) DO NOTHING`,
+      [code,player.id]
+    );
+    res.json({ ok: true, code });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.get("/v1/rooms/:code", async (req, res) => {
+  if (!v1Pool) return res.status(503).json({ error: "Database unavailable" });
+  const code = String(req.params.code).toUpperCase();
+  const room = await v1Pool.query("SELECT * FROM v1_rooms WHERE code=$1", [code]);
+  if (!room.rowCount) return res.status(404).json({ error: "Race room not found" });
+  const members = await v1Pool.query(
+    `SELECT p.legacy_name, m.is_host, m.status, m.joined_at
+     FROM v1_room_members m JOIN v1_players p ON p.id=m.player_id
+     WHERE m.room_code=$1 ORDER BY m.is_host DESC, m.joined_at ASC`,
+    [code]
+  );
+  res.json({ room: room.rows[0], members: members.rows });
+});
+
+app.post("/v1/rooms/:code/start", async (req, res) => {
+  if (!v1Pool) return res.status(503).json({ error: "Database unavailable" });
+  const code = String(req.params.code).toUpperCase();
+  const key = v1LegacyKey(req.body?.legacyName);
+  const { rows } = await v1Pool.query(
+    `SELECT r.* FROM v1_rooms r JOIN v1_players p ON p.id=r.host_player_id
+     WHERE r.code=$1 AND p.legacy_key=$2`,
+    [code,key]
+  );
+  if (!rows.length) return res.status(403).json({ error: "Only the host can start this race" });
+  const updated = await v1Pool.query(
+    `UPDATE v1_rooms SET status='started', started_at=NOW()
+     WHERE code=$1 AND status='lobby' RETURNING *`,
+    [code]
+  );
+  if (!updated.rowCount) return res.status(409).json({ error: "Race is not in lobby state" });
+  res.json({ room: updated.rows[0] });
+});
+
 
 // Health check
 app.get("/", (req, res) => {
