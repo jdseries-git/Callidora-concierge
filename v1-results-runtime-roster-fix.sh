@@ -24,7 +24,7 @@ node --check dist/js/ui.js
 cat > dist/js/v1-online.js <<'JS'
 // Velocita One online layer: persistent SL Legacy Name profiles, live leaderboard,
 // and race-room lobby foundation. Kept separate from the race engine intentionally.
-const API = 'https://callidora-concierge.onrender.com/v1';
+const API = 'https://v1-league-online.floot.app/_api';
 const STORE = {
   name: 'v1_legacy_name',
   room: 'v1_room_code',
@@ -44,7 +44,7 @@ const roomCode = () => (localStorage.getItem(STORE.room)||'').trim().toUpperCase
 async function api(path, opts={}) {
   const r = await fetch(API + path, {
     ...opts,
-    headers: {'Content-Type':'application/json', ...(opts.headers||{})},
+    headers: {'Content-Type':'text/plain;charset=UTF-8', ...(opts.headers||{})},
   });
   let body = {};
   try { body = await r.json(); } catch {}
@@ -91,7 +91,7 @@ async function ensurePlayer(force=false) {
         if (!value) { status.textContent='Legacy Name is required.'; return; }
         try {
           status.textContent='Connecting…';
-          const data = await api('/players',{method:'POST',body:JSON.stringify({legacyName:value})});
+          const data = await api('/v1-player',{method:'POST',body:JSON.stringify({legacyName:value})});
           localStorage.setItem(STORE.name, data.player.legacy_name);
           close();
           resolve(data.player.legacy_name);
@@ -100,7 +100,7 @@ async function ensurePlayer(force=false) {
     });
   }
   try {
-    const data = await api('/players',{method:'POST',body:JSON.stringify({legacyName:name})});
+    const data = await api('/v1-player',{method:'POST',body:JSON.stringify({legacyName:name})});
     localStorage.setItem(STORE.name, data.player.legacy_name);
     return data.player.legacy_name;
   } catch(e) {
@@ -112,7 +112,7 @@ async function ensurePlayer(force=false) {
 
 async function profile() {
   const name = await ensurePlayer();
-  const data = await api('/players/'+encodeURIComponent(name));
+  const data = await api('/v1-player?legacyName='+encodeURIComponent(name));
   shell('DRIVER PROFILE', `
     <div class="v1o-driver">${esc(data.legacy_name)}</div>
     <div class="v1o-stats">
@@ -129,7 +129,7 @@ async function leaderboard(period='daily') {
   await ensurePlayer();
   shell('LIVE LEADERBOARD', '<div class="v1o-status">Loading live rankings…</div>');
   try {
-    const data = await api('/leaderboard?period='+period+'&limit=50');
+    const data = await api('/v1-leaderboard?period='+period+'&limit=50');
     const rows = data.entries.map((e,i)=>`
       <tr><td class="rank">${i+1}</td><td>${esc(e.legacy_name)}</td><td>${e.score||0}</td><td>${moneyTime(e.fastest_lap_ms)}</td></tr>`).join('');
     shell('LIVE LEADERBOARD', `
@@ -177,7 +177,7 @@ function createRoom(name) {
     const status=document.getElementById('v1o-status');
     try {
       status.textContent='Creating lobby…';
-      const data=await api('/rooms',{method:'POST',body:JSON.stringify({
+      const data=await api('/v1-room',{method:'POST',body:JSON.stringify({
         legacyName:name,title:document.getElementById('v1o-title').value,
         trackId:document.getElementById('v1o-track').value,
         laps:+document.getElementById('v1o-laps').value,
@@ -197,7 +197,7 @@ function joinPrompt(name) {
 async function joinRoom(code,name) {
   if(!code) return joinPrompt(name);
   try {
-    await api('/rooms/'+encodeURIComponent(code)+'/join',{method:'POST',body:JSON.stringify({legacyName:name})});
+    await api('/v1-room-join',{method:'POST',body:JSON.stringify({code,legacyName:name})});
     localStorage.setItem(STORE.room,code);
     openRoom(code,name);
   } catch(e) {
@@ -210,7 +210,7 @@ async function openRoom(code,name) {
   clearInterval(pollTimer);
   const draw=async()=>{
     try {
-      const data=await api('/rooms/'+encodeURIComponent(code));
+      const data=await api('/v1-room?code='+encodeURIComponent(code));
       const r=data.room;
       const members=data.members.map(m=>`<li><span>${esc(m.legacy_name)}</span>${m.is_host?'<b>HOST</b>':''}</li>`).join('');
       const host=data.members.find(m=>m.is_host)?.legacy_name?.toLowerCase()===name.toLowerCase();
@@ -225,7 +225,7 @@ async function openRoom(code,name) {
         ${host && r.status==='lobby'?'<button class="v1o-btn" id="v1o-start">START RACE</button>':''}
         ${r.status==='started'?'<button class="v1o-btn" id="v1o-enter">ENTER RACE</button>':''}`);
       document.getElementById('v1o-copy').onclick=async()=>{await navigator.clipboard?.writeText(invite);document.getElementById('v1o-copy').textContent='COPIED';};
-      document.getElementById('v1o-start')?.addEventListener('click',async()=>{await api('/rooms/'+code+'/start',{method:'POST',body:JSON.stringify({legacyName:name})});draw();});
+      document.getElementById('v1o-start')?.addEventListener('click',async()=>{await api('/v1-room-start',{method:'POST',body:JSON.stringify({code,legacyName:name})});draw();});
       document.getElementById('v1o-enter')?.addEventListener('click',()=>{close();document.querySelector('[data-a="quick"]')?.click();});
     } catch(e) { shell('RACE LOBBY','<p>'+esc(e.message)+'</p>'); }
   };
@@ -255,7 +255,7 @@ async function submitVisibleResult() {
     if(m) fastestLapMs=(+m[1]*60 + +m[2])*1000 + +m[3];
   }
   try {
-    await api('/results',{method:'POST',body:JSON.stringify({
+    await api('/v1-result',{method:'POST',body:JSON.stringify({
       legacyName:name,mode:'race',trackId:'unknown',score,
       finishPosition:Number.isFinite(pos)?pos:null,fastestLapMs,roomCode:roomCode()||null
     })});
