@@ -242,6 +242,7 @@ async function openRoom(code,name) {
 // Provisional V1 score: race points are the core score; finishing higher and fastest-lap
 // performance remain visible as separate stats. This can be swapped later without changing storage.
 async function submitVisibleResult() {
+  if(v1mpConfig()) return; // multiplayer results are written only by authoritative race control
   const screen=document.getElementById('screen-results');
   if(!screen?.classList.contains('active') || screen.dataset.v1Submitted==='1') return;
   const name=legacyName();
