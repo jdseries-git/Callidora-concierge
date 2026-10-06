@@ -402,6 +402,7 @@ const obs=new MutationObserver(()=>{
   const rs=document.getElementById('screen-results');
   if(rs && !rs.classList.contains('active')) delete rs.dataset.v1Submitted;
   submitVisibleResult();
+  v1mpPatchRestartButton();
 });
 obs.observe(document.documentElement,{subtree:true,childList:true,attributes:true,attributeFilter:['class']});
 addEventListener('DOMContentLoaded',()=>{
@@ -608,9 +609,9 @@ function v1mpIngestRemote(entry,state){
 function v1mpRenderRemote(entry){
   if(!entry?.mesh || !entry._v1NetTo) return;
   const a=entry._v1NetFrom||entry._v1NetTo, b=entry._v1NetTo;
-  // Intentionally render about one packet behind (~80ms) to remove visible
-  // 20Hz network stepping while still feeling immediate in a racing context.
-  const t=Math.max(0,Math.min(1,(performance.now()-(entry._v1NetAt||0))/80));
+  // Smooth the higher-rate network stream over a short buffer so passing cars
+  // stay visually continuous without feeling delayed.
+  const t=Math.max(0,Math.min(1,(performance.now()-(entry._v1NetAt||0))/55));
   const lerp=(x,y)=>x+(y-x)*t;
   const dh=Math.atan2(Math.sin(b.heading-a.heading),Math.cos(b.heading-a.heading));
   const pose={
@@ -657,7 +658,10 @@ function v1mpAssignRemoteEntries(game,snapshot){
     const key=remote.legacyName.toLowerCase();
     let entry=v1mp.remoteEntries.get(key);
     if(!entry){
-      entry=game.session.entries.find(e=>!e.isPlayer && e.driver?.id===remote.driverId && !used.has(e) && ![...v1mp.remoteEntries.values()].includes(e));
+      if(remote.teamId){
+        entry=game.session.entries.find(e=>!e.isPlayer && e.team?.id===remote.teamId && !used.has(e) && ![...v1mp.remoteEntries.values()].includes(e));
+      }
+      if(!entry) entry=game.session.entries.find(e=>!e.isPlayer && e.driver?.id===remote.driverId && !used.has(e) && ![...v1mp.remoteEntries.values()].includes(e));
       if(!entry) entry=game.session.entries.find(e=>!e.isPlayer && ![...v1mp.remoteEntries.values()].includes(e) && !used.has(e));
       if(entry){
         v1mp.remoteEntries.set(key,entry);
@@ -702,11 +706,63 @@ function v1mpAssignRemoteEntries(game,snapshot){
   }
 }
 
+function v1mpRequestRestart(){
+  const cfg=v1mpConfig();
+  if(!cfg || !v1mp?.ws || v1mp.ws.readyState!==1) return;
+  if(!cfg.isHost){
+    v1mpOverlay('WAITING FOR HOST','Only the race host can restart a multiplayer race.');
+    setTimeout(v1mpHideOverlay,1800);
+    return;
+  }
+  v1mpOverlay('RESTARTING RACE','Resetting the room for every driver…');
+  v1mp.ws.send(JSON.stringify({type:'restart',expectedCount:cfg.expectedCount}));
+}
+
+function v1mpRestartLocal(restartAt=Date.now()){
+  const game=window.__game;
+  if(!game?.raceConfig) return;
+  if(v1mp){
+    v1mp.green=false;
+    v1mp.readySent=false;
+    v1mp.latest.clear();
+    v1mp.remoteEntries.clear();
+    v1mp.lastSnapshot=null;
+  }
+  close();
+  v1mpOverlay('RESTARTING','Waiting for every driver to return to the grid…');
+  const delay=Math.max(0,restartAt-Date.now());
+  setTimeout(()=>{
+    game.startSession(game.raceConfig);
+  },delay);
+}
+
+function v1mpPatchRestartButton(){
+  const cfg=v1mpConfig();
+  if(!cfg) return;
+  const rs=document.getElementById('screen-results');
+  const old=rs?.querySelector('#btn-restart');
+  if(!old || old.dataset.v1Sync==='1') return;
+  const fresh=old.cloneNode(true);
+  fresh.dataset.v1Sync='1';
+  const span=fresh.querySelector('span');
+  if(cfg.isHost){
+    if(span) span.textContent='RESTART MULTIPLAYER RACE';
+    fresh.disabled=false;
+    fresh.addEventListener('click',v1mpRequestRestart);
+  }else{
+    if(span) span.textContent='WAITING FOR HOST TO RESTART';
+    fresh.disabled=true;
+  }
+  old.replaceWith(fresh);
+}
+
 function v1mpOfficialResults(classification){
   const rows=(classification||[]).map((p,i)=>'<tr><td class="rank">'+(p.finishPosition||i+1)+'</td><td>'+esc(p.legacyName)+'</td><td>'+(p.dnf?'DNF':'FINISHED')+'</td></tr>').join('');
   shell('OFFICIAL MULTIPLAYER RESULTS',
     '<table class="v1o-table"><thead><tr><th>POS</th><th>SL LEGACY NAME</th><th>STATUS</th></tr></thead><tbody>'+rows+'</tbody></table>'+
-    '<button class="v1o-btn" id="v1o-results-menu">RETURN TO MAIN MENU</button>');
+    (v1mpConfig()?.isHost?'<button class="v1o-btn" id="v1o-results-restart">RESTART MULTIPLAYER RACE</button>':'<div class="v1o-status">WAITING FOR HOST · The host can restart this race for everyone.</div>')+
+    '<button class="v1o-btn ghost" id="v1o-results-menu">RETURN TO MAIN MENU</button>');
+  document.getElementById('v1o-results-restart')?.addEventListener('click',v1mpRequestRestart);
   document.getElementById('v1o-results-menu').onclick=()=>{
     sessionStorage.removeItem('v1_multiplayer_config');
     v1mp?.ws?.close();
@@ -720,7 +776,7 @@ function v1mpOfficialResults(classification){
 
 function v1mpConnect(game,cfg){
   if(v1mp?.ws && v1mp.cfg?.roomCode===cfg.roomCode) return;
-  const ws=new WebSocket(V1_RT_URL+'?room='+encodeURIComponent(cfg.roomCode)+'&name='+encodeURIComponent(cfg.legacyName));
+  const ws=new WebSocket(V1_RT_URL+'?room='+encodeURIComponent(cfg.roomCode)+'&name='+encodeURIComponent(cfg.legacyName)+'&host='+(cfg.isHost?'1':'0'));
   v1mp={
     cfg,ws,remoteEntries:new Map(),latest:new Map(),lastSend:0,green:false,
     originalBegin:game.beginSessionFromGate.bind(game), readySent:false, lastSnapshot:null
@@ -770,6 +826,7 @@ function v1mpConnect(game,cfg){
       game.hud?.message?.('OFFICIAL FINISH · P'+msg.finishPosition,'green');
     }
     if(msg.type==='raceFinished') v1mpOfficialResults(msg.classification);
+    if(msg.type==='restart') v1mpRestartLocal(msg.restartAt||Date.now());
     if(msg.type==='disconnect') game.hud?.message?.(msg.legacyName+' disconnected · 30s reconnect window','yellow');
   };
 }
@@ -803,7 +860,9 @@ function v1mpTick(){
     game.hud?.hideSessionReady?.();
     v1mp.ws.send(JSON.stringify({
       type:'ready', expectedCount:cfg.expectedCount, trackId:cfg.trackId, laps:cfg.laps,
-      trackLength:game.circuit.length, driverId:game.session.player?.driver?.id||game.ui?.sel?.driverId||null
+      trackLength:game.circuit.length,
+      driverId:game.session.player?.driver?.id||game.ui?.sel?.driverId||null,
+      teamId:game.session.player?.team?.id||game.session.player?.driver?.team||null
     }));
     if(cfg.isHost){
       v1mp.ws.send(JSON.stringify({
@@ -819,7 +878,7 @@ function v1mpTick(){
   }
 
   const now=performance.now();
-  if(now-v1mp.lastSend<50) return;
+  if(now-v1mp.lastSend<33) return;
   v1mp.lastSend=now;
   const e=game.session.player, p=e?.phys;
   if(!p) return;
