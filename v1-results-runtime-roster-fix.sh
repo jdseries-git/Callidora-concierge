@@ -145,7 +145,7 @@ function v1PositionDriverSession(){
     badge.style.left='auto';
     badge.style.top='auto';
     badge.style.bottom='10px';
-    badge.style.right=(title.offsetWidth + 48)+'px';
+    badge.style.right=(title.offsetWidth + 120)+'px';
     badge.style.margin='0';
     badge.style.transform='none';
   }
