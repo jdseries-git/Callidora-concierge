@@ -20,6 +20,24 @@ NODE
 node --check dist/js/data-fictional.js
 node --check dist/js/ui.js
 
+# Add V1 simulator-specific control hint to the existing Controls menu.
+node - <<'NODE'
+const fs=require('fs');
+const f='dist/js/ui.js';
+let x=fs.readFileSync(f,'utf8');
+if(!x.includes("MUTE DRIVING SOUNDS")){
+  const pause="['PAUSE','ESC','—']";
+  if(x.includes(pause)){
+    x=x.replace(pause, "['PAUSE','ESC','—'],\n        ['MUTE DRIVING SOUNDS','CTRL + M','—']");
+  } else {
+    const pause2="['PAUSE','ESC','-']";
+    if(x.includes(pause2)) x=x.replace(pause2, "['PAUSE','ESC','-'],\n        ['MUTE DRIVING SOUNDS','CTRL + M','-']");
+  }
+}
+fs.writeFileSync(f,x);
+NODE
+node --check dist/js/ui.js
+
 # ===== V1 ONLINE LAYER =====
 cat > dist/js/v1-online.js <<'JS'
 import { buildNameTag } from './car.js';
