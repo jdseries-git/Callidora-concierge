@@ -154,7 +154,8 @@ function v1PositionDriverSession(){
     const gap=48;
     badge.style.position='fixed';
     badge.style.right='auto';
-    badge.style.top=Math.max(16,hr.top+(hr.height-badge.offsetHeight)/2)+'px';
+    // Vertically align the driver/logout box to the MAIN MENU title itself.
+    badge.style.top=Math.max(16,tr.top+(tr.height-badge.offsetHeight)/2)+'px';
     // Place the driver/logout control in the target slot immediately left of MAIN MENU.
     const availableRight=tr.left-gap;
     badge.style.left=Math.max(24,availableRight-badge.offsetWidth)+'px';
