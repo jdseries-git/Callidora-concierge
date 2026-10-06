@@ -335,7 +335,7 @@ async function openRoom(code,name) {
       const host=data.members.find(m=>m.is_host)?.legacy_name?.toLowerCase()===name.toLowerCase();
       const invite=location.origin+location.pathname+'?v1room='+encodeURIComponent(code);
       shell('RACE LOBBY · '+esc(code), `
-        <div class="v1o-roomhead"><div><small>${esc(r.kind).toUpperCase()}</small><h3>${esc(r.title)}</h3></div><div><b>${esc(r.track_id).toUpperCase()}</b><span>${r.laps} LAPS</span></div></div>
+        <div class="v1o-roomhead"><div><small>${esc(r.kind).toUpperCase()}</small><h3>${esc(r.title)}</h3></div><div><small>HOST-SELECTED CIRCUIT</small><b>${esc(r.track_id).toUpperCase()}</b><span>${r.laps} LAPS · LOCKED FOR ALL DRIVERS</span></div></div>
         <label class="v1o-label">INVITE LINK</label>
         <div class="v1o-copyrow"><input class="v1o-input" id="v1o-link" readonly value="${esc(invite)}"><button class="v1o-btn mini" id="v1o-copy">COPY</button></div>
         <h4 class="v1o-rosterlabel">DRIVERS · ${data.members.length}/${r.max_players}</h4>
@@ -466,10 +466,19 @@ function v1mpMaybeAutoTrack(){
   if(!cfg) return;
   const screen=document.getElementById('screen-track');
   if(!screen?.classList.contains('active')) return;
-  const card=screen.querySelector('.track-card[data-t="'+CSS.escape(cfg.trackId)+'"]');
+
+  // Multiplayer circuit selection is HOST-AUTHORITATIVE.
+  // Guests never choose a circuit locally; Race Control applies the room circuit.
+  screen.style.visibility='hidden';
+  const wanted=String(cfg.trackId||'').trim().toLowerCase();
+  const cards=[...screen.querySelectorAll('.track-card[data-t]')];
+  const card=cards.find(x=>String(x.dataset.t||'').toLowerCase()===wanted);
   if(card && !card.dataset.v1AutoClicked){
     card.dataset.v1AutoClicked='1';
-    card.click();
+    requestAnimationFrame(()=>card.click());
+  } else if(!card && cards.length){
+    screen.style.visibility='visible';
+    v1mpOverlay('RACE CONTROL ERROR','Host circuit "'+wanted+'" is not available in this build.');
   }
 }
 
@@ -493,16 +502,29 @@ function v1mpApplyRemote(entry,state){
   p.pos.z += (state.z-p.pos.z)*alpha;
   const da=Math.atan2(Math.sin(state.heading-p.heading),Math.cos(state.heading-p.heading));
   p.heading += da*alpha;
-  p.v=state.v;
-  p.steer=state.steer||0;
-  p.sampleIdx=state.sampleIdx||0;
-  p.totalDist=state.totalDist||0;
+  p.v=Number(state.v)||0;
+  p.steer=Number(state.steer)||0;
+  p.sampleIdx=Number(state.sampleIdx)||0;
+  p.totalDist=Number(state.totalDist)||0;
   entry.lap=state.lap ?? entry.lap;
-  entry.wheelSpin=state.wheelSpin||entry.wheelSpin||0;
+  entry.wheelSpin=Number(state.wheelSpin)||entry.wheelSpin||0;
+  entry.dnf=false;
+  entry.finished=false;
+  p.disabled=false;
+
+  // RaceSession.render() draws from interpolation snapshots, not directly from phys.
+  // Keep those snapshots synced to the network pose so the remote HUMAN car
+  // cannot be overwritten back to its old AI/grid position on the next render frame.
+  for(const snap of [entry.renderPrev,entry.renderCurr,entry.renderPose]){
+    if(!snap) continue;
+    snap.x=p.pos.x; snap.y=p.pos.y; snap.z=p.pos.z; snap.heading=p.heading;
+    snap.v=p.v; snap.steer=p.steer; snap.wheelSpin=entry.wheelSpin;
+  }
   if(entry.mesh){
     entry.mesh.position.set(p.pos.x,p.pos.y,p.pos.z);
     entry.mesh.rotation.y=p.heading;
     entry.mesh.visible=true;
+    entry.carHandle?.root && (entry.carHandle.root.visible=true);
   }
 }
 
@@ -515,7 +537,7 @@ function v1mpAssignRemoteEntries(game,snapshot){
     const key=remote.legacyName.toLowerCase();
     let entry=v1mp.remoteEntries.get(key);
     if(!entry){
-      entry=game.session.entries.find(e=>!e.isPlayer && e.driver?.id===remote.driverId && !used.has(e));
+      entry=game.session.entries.find(e=>!e.isPlayer && e.driver?.id===remote.driverId && !used.has(e) && ![...v1mp.remoteEntries.values()].includes(e));
       if(!entry) entry=game.session.entries.find(e=>!e.isPlayer && ![...v1mp.remoteEntries.values()].includes(e) && !used.has(e));
       if(entry){
         v1mp.remoteEntries.set(key,entry);
@@ -525,6 +547,8 @@ function v1mpAssignRemoteEntries(game,snapshot){
         entry.phys.disabled=false;
         entry.mesh.visible=true;
         entry.tag && (entry.tag.visible=false);
+        if(entry.mesh) entry.mesh.visible=true;
+        if(entry.carHandle?.root) entry.carHandle.root.visible=true;
         v1mpMakeRemoteStub(entry);
       }
     }
