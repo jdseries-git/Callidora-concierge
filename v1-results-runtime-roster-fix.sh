@@ -136,9 +136,11 @@ function v1PositionDriverSession(){
   const title=main?.querySelector('.menu-header .title');
   if(main?.classList.contains('active') && title){
     const r=title.getBoundingClientRect();
-    const gap=30;
-    const maxLeft=Math.max(18,window.innerWidth-badge.offsetWidth-18);
-    badge.style.left=Math.min(r.right+gap,maxLeft)+'px';
+    const gap=34;
+    // Driver controls belong in the open space LEFT of MAIN MENU.
+    // Clamp to the viewport edge, but never allow the badge to cross into the title.
+    const idealLeft=r.left-gap-badge.offsetWidth;
+    badge.style.left=Math.max(18,idealLeft)+'px';
     badge.style.top=Math.max(16,r.top+(r.height-badge.offsetHeight)/2)+'px';
     badge.style.right='auto';
   } else {
