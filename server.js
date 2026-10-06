@@ -919,12 +919,31 @@ app.post("/v1/rooms/:code/start", async (req, res) => {
     [code,key]
   );
   if (!rows.length) return res.status(403).json({ error: "Only the host can start this race" });
-  const updated = await v1Pool.query(
-    `UPDATE v1_rooms SET status='started', started_at=NOW()
-     WHERE code=$1 AND status='lobby' RETURNING *`,
-    [code]
-  );
-  if (!updated.rowCount) return res.status(409).json({ error: "Race is not in lobby state" });
+  const requestedTrack = String(req.body?.trackId || "").trim().toLowerCase().slice(0,50);
+  const requestedLaps = Math.min(100, Math.max(1, Number(req.body?.laps) || rows[0].laps || 5));
+  let updated;
+  if (rows[0].status === "lobby") {
+    updated = await v1Pool.query(
+      `UPDATE v1_rooms
+       SET status='started', started_at=NOW(),
+           track_id=CASE WHEN $2<>'' THEN $2 ELSE track_id END,
+           laps=$3
+       WHERE code=$1 AND status='lobby' RETURNING *`,
+      [code, requestedTrack, requestedLaps]
+    );
+  } else if (rows[0].status === "started" && requestedTrack && (rows[0].track_id === "pending" || rows[0].track_id !== requestedTrack)) {
+    // The host first starts the lobby, then chooses the actual circuit on the
+    // visual track map. Allow that second host action to lock the circuit.
+    updated = await v1Pool.query(
+      `UPDATE v1_rooms SET track_id=$2, laps=$3
+       WHERE code=$1 AND status='started' RETURNING *`,
+      [code, requestedTrack, requestedLaps]
+    );
+  } else if (rows[0].status === "started") {
+    updated = { rowCount: 1, rows };
+  } else {
+    return res.status(409).json({ error: "Race is not in a startable state" });
+  }
   res.json({ room: updated.rows[0] });
 });
 
