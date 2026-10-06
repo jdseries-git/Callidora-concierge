@@ -135,14 +135,21 @@ function v1PositionDriverSession(){
   const main=document.getElementById('screen-main');
   const title=main?.querySelector('.menu-header .title');
   if(main?.classList.contains('active') && title){
-    const r=title.getBoundingClientRect();
-    const gap=34;
-    // Driver controls belong in the open space LEFT of MAIN MENU.
-    // Clamp to the viewport edge, but never allow the badge to cross into the title.
-    const idealLeft=r.left-gap-badge.offsetWidth;
-    badge.style.left=Math.max(18,idealLeft)+'px';
-    badge.style.top=Math.max(16,r.top+(r.height-badge.offsetHeight)/2)+'px';
+    const header=title.closest('.menu-header');
+    const hr=header?.getBoundingClientRect();
+    const gap=40;
+    // Lay the header out explicitly: driver controls first, then MAIN MENU.
+    // This guarantees the title begins AFTER the logout area instead of sitting underneath it.
+    const badgeLeft=Math.max(24,(hr?.left||0)+24);
+    badge.style.left=badgeLeft+'px';
+    badge.style.top=Math.max(16,(hr?.top||0)+((hr?.height||title.offsetHeight)-badge.offsetHeight)/2)+'px';
     badge.style.right='auto';
+    const titleLeft=badgeLeft+badge.offsetWidth+gap;
+    title.style.position='fixed';
+    title.style.left=titleLeft+'px';
+    title.style.right='auto';
+    title.style.top=Math.max(0,(hr?.top||0)+((hr?.height||title.offsetHeight)-title.offsetHeight)/2)+'px';
+    title.style.transform='none';
   } else {
     badge.style.left='auto';
     badge.style.right='18px';
