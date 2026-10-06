@@ -390,6 +390,19 @@ function injectMainButtons() {
   nav.appendChild(mk('LOG OUT','End this driver session and reset the simulator',()=>v1Logout('manual')));
 }
 
+document.addEventListener('click',(ev)=>{
+  const cfg=v1mpConfig();
+  if(!cfg) return;
+  const restart=ev.target.closest?.(
+    '#screen-pause [data-a="restart"], #screen-results #btn-restart, #screen-results #btn-again'
+  );
+  if(!restart) return;
+  ev.preventDefault();
+  ev.stopPropagation();
+  ev.stopImmediatePropagation();
+  v1mpRequestRestart();
+},true);
+
 const obs=new MutationObserver(()=>{
   injectMainButtons();
   v1PositionDriverSession();
@@ -585,7 +598,8 @@ function v1mpIngestRemote(entry,state){
   entry._v1NetTo={
     x:nx,y:groundY,z:nz,
     heading:Number(state.heading)||0,v:Number(state.v)||0,
-    steer:Number(state.steer)||0,wheelSpin:Number(state.wheelSpin)||0
+    steer:Number(state.steer)||0,wheelSpin:Number(state.wheelSpin)||0,
+    sampleIdx:Number(state.sampleIdx)||0
   };
   entry._v1NetAt=performance.now();
 
@@ -603,13 +617,27 @@ function v1mpIngestRemote(entry,state){
 function v1mpRenderRemote(entry){
   if(!entry?.mesh || !entry._v1NetTo) return;
   const a=entry._v1NetFrom||entry._v1NetTo, b=entry._v1NetTo;
-  // Smooth the higher-rate network stream over a short buffer so passing cars
-  // stay visually continuous without feeling delayed.
-  const t=Math.max(0,Math.min(1,(performance.now()-(entry._v1NetAt||0))/55));
+  // Interpolate normal packets, then predict only a tiny distance during packet
+  // jitter so the remote car keeps moving instead of freezing and snapping.
+  const age=performance.now()-(entry._v1NetAt||0);
+  const blendMs=40;
+  const t=Math.max(0,Math.min(1,age/blendMs));
   const lerp=(x,y)=>x+(y-x)*t;
   const dh=Math.atan2(Math.sin(b.heading-a.heading),Math.cos(b.heading-a.heading));
+  let px=lerp(a.x,b.x), py=lerp(a.y,b.y), pz=lerp(a.z,b.z);
+  if(age>blendMs){
+    const extra=Math.min(70,age-blendMs)/1000;
+    const c=window.__game?.circuit;
+    const si=Math.max(0,Math.min((c?.N||1)-1,Math.round(b.sampleIdx||0)));
+    const sm=c?.samples?.[si];
+    if(sm?.t){
+      px += sm.t.x * b.v * extra;
+      pz += sm.t.z * b.v * extra;
+      if(c?.heightAt) py=c.heightAt(si);
+    }
+  }
   const pose={
-    x:lerp(a.x,b.x), y:lerp(a.y,b.y), z:lerp(a.z,b.z),
+    x:px, y:py, z:pz,
     heading:a.heading+dh*t, v:lerp(a.v,b.v),
     steer:lerp(a.steer,b.steer), wheelSpin:lerp(a.wheelSpin,b.wheelSpin)
   };
@@ -651,6 +679,14 @@ function v1mpAssignRemoteEntries(game,snapshot){
   for(const remote of remotes){
     const key=remote.legacyName.toLowerCase();
     let entry=v1mp.remoteEntries.get(key);
+    // A player may appear in the room snapshot before their team selection is
+    // known. If that early placeholder was the wrong constructor, discard it
+    // and remap the human as soon as the real teamId arrives.
+    if(entry && remote.teamId && entry.team?.id!==remote.teamId){
+      v1mp.remoteEntries.delete(key);
+      entry=null;
+    }
+    if(entry) used.add(entry);
     if(!entry){
       if(remote.teamId){
         entry=game.session.entries.find(e=>!e.isPlayer && e.team?.id===remote.teamId && !used.has(e) && ![...v1mp.remoteEntries.values()].includes(e));
@@ -872,7 +908,7 @@ function v1mpTick(){
   }
 
   const now=performance.now();
-  if(now-v1mp.lastSend<33) return;
+  if(now-v1mp.lastSend<20) return;
   v1mp.lastSend=now;
   const e=game.session.player, p=e?.phys;
   if(!p) return;
