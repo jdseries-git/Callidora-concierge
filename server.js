@@ -954,8 +954,8 @@ function v1RtRoom(code) {
 }
 function v1RtPublicPlayer(p) {
   return {
-    legacyName: p.legacyName, driverId: p.driverId || null,
-    connected: !!p.connected, ready: !!p.ready, finished: !!p.finished,
+    legacyName: p.legacyName, driverId: p.driverId || null, teamId: p.teamId || null,
+    isHost: !!p.isHost, connected: !!p.connected, ready: !!p.ready, finished: !!p.finished,
     finishPosition: p.finishPosition || null, dnf: !!p.dnf,
     state: p.state || null,
   };
@@ -1082,7 +1082,7 @@ function v1RtApplyState(room, player, raw) {
     const target = player.startDistance + Math.max(1, room.laps) * Math.max(100, room.trackLength);
     if (totalDist >= target) v1RtFinish(room, player);
   }
-  if (now - room.lastBroadcast >= 45) {
+  if (now - room.lastBroadcast >= 30) {
     room.lastBroadcast = now;
     v1RtBroadcast(room, v1RtSnapshot(room));
   }
@@ -1102,7 +1102,8 @@ v1Wss.on("connection", (ws, request) => {
   let player = room.players.get(key);
   if (!player) {
     player = {
-      legacyName, key, ws, connected: true, ready: false, driverId: null,
+      legacyName, key, ws, connected: true, ready: false, driverId: null, teamId: null,
+      isHost: url.searchParams.get("host") === "1",
       state: null, lastStateAt: 0, startDistance: null,
       finished: false, finishPosition: null, dnf: false, resultSubmitted: false,
     };
@@ -1110,6 +1111,7 @@ v1Wss.on("connection", (ws, request) => {
   } else {
     try { player.ws?.close(4001, "Reconnected elsewhere"); } catch {}
     player.ws = ws; player.connected = true; player.dnf = false;
+    player.isHost = player.isHost || url.searchParams.get("host") === "1";
   }
   ws._v1 = { room, player };
   ws.send(JSON.stringify({ type: "welcome", room: code, status: room.status, serverNow: Date.now(), startAt: room.startAt || 0 }));
@@ -1122,6 +1124,7 @@ v1Wss.on("connection", (ws, request) => {
     if (msg.type === "ready") {
       player.ready = true;
       player.driverId = String(msg.driverId || "").slice(0, 50) || null;
+      player.teamId = String(msg.teamId || "").slice(0, 50) || null;
       const expected = Math.max(1, Math.min(24, Number(msg.expectedCount) || 1));
       room.expectedCount = Math.max(room.expectedCount, expected);
       if (!room.trackId) room.trackId = String(msg.trackId || "unknown").slice(0, 50);
@@ -1139,6 +1142,32 @@ v1Wss.on("connection", (ws, request) => {
       room.trackLength = Math.max(100, Math.min(20000, Number(msg.trackLength) || room.trackLength || 5000));
       v1RtBroadcast(room, v1RtSnapshot(room));
       v1RtMaybeStart(room);
+      return;
+    }
+    if (msg.type === "restart") {
+      if (!player.isHost) return;
+      room.status = "waiting";
+      room.armed = false;
+      room.startAt = 0;
+      room.finishOrder = [];
+      room.expectedCount = Math.max(1, Math.min(24, Number(msg.expectedCount) || room.expectedCount || room.players.size || 1));
+      for (const p of room.players.values()) {
+        p.ready = false;
+        p.finished = false;
+        p.finishPosition = null;
+        p.dnf = false;
+        p.state = null;
+        p.startDistance = null;
+        p.resultSubmitted = false;
+      }
+      v1RtBroadcast(room, {
+        type: "restart",
+        restartAt: Date.now() + 1200,
+        expectedCount: room.expectedCount,
+        trackId: room.trackId,
+        laps: room.laps,
+        serverNow: Date.now(),
+      });
       return;
     }
     if (msg.type === "state") {
