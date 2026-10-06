@@ -137,41 +137,17 @@ function v1PositionDriverSession(){
   const header=main?.querySelector('.menu-header');
   const title=header?.querySelector('.title');
 
-  // MAIN MENU is never moved. Only place the driver box in the empty area to its left.
-  if(title){
-    title.style.position='';
-    title.style.left='';
-    title.style.right='';
-    title.style.top='';
-    title.style.transform='';
-    title.style.marginLeft='';
-    title.style.flex='';
-  }
-
-  if(main?.classList.contains('active') && header && title){
-    if(badge.parentElement!==document.body) document.body.appendChild(badge);
-    const hr=header.getBoundingClientRect();
-    const tr=title.getBoundingClientRect();
-    const gap=48;
-    badge.style.position='fixed';
-    badge.style.right='auto';
-    // Match the visual center of the italic MAIN MENU glyphs (their CSS line box sits slightly low).
-    badge.style.top=Math.max(16,tr.bottom-badge.offsetHeight)+'px';
-    // Place the driver/logout control in the target slot immediately left of MAIN MENU.
-    const availableRight=tr.left-gap;
-    badge.style.left=Math.max(24,availableRight-badge.offsetWidth)+'px';
-    badge.style.marginLeft='';
-    badge.style.marginRight='';
-    badge.style.flex='';
-  } else {
-    if(badge.parentElement!==document.body) document.body.appendChild(badge);
-    badge.style.position='fixed';
+  // Permanent header anchor. Do NOT recalculate from viewport coordinates.
+  // This prevents menu animations, mutations, and screen changes from shifting it.
+  if(header && title){
+    if(badge.parentElement!==header) header.appendChild(badge);
+    badge.style.position='absolute';
     badge.style.left='auto';
-    badge.style.right='18px';
-    badge.style.top='16px';
-    badge.style.marginLeft='';
-    badge.style.marginRight='';
-    badge.style.flex='';
+    badge.style.top='auto';
+    badge.style.bottom='10px';
+    badge.style.right=(title.offsetWidth + 48)+'px';
+    badge.style.margin='0';
+    badge.style.transform='none';
   }
 }
 function v1ShowSignedInDriver(){
@@ -218,7 +194,6 @@ function v1Logout(reason='manual'){
 
 function v1MarkActivity(){ v1LastActivity=Date.now(); }
 ['pointerdown','keydown','touchstart','gamepadconnected'].forEach(ev=>addEventListener(ev,v1MarkActivity,{passive:true}));
-addEventListener('resize',v1PositionDriverSession);
 setInterval(()=>{
   if(legacyName() && Date.now()-v1LastActivity>=V1_IDLE_MS) v1Logout('idle');
 },15000);
