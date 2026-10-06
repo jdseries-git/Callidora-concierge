@@ -155,11 +155,9 @@ function v1PositionDriverSession(){
     badge.style.position='fixed';
     badge.style.right='auto';
     badge.style.top=Math.max(16,hr.top+(hr.height-badge.offsetHeight)/2)+'px';
-    // Center the badge in the available empty header area left of MAIN MENU.
-    const availableLeft=hr.left+24;
+    // Place the driver/logout control in the target slot immediately left of MAIN MENU.
     const availableRight=tr.left-gap;
-    const centered=availableLeft+Math.max(0,(availableRight-availableLeft-badge.offsetWidth)/2);
-    badge.style.left=Math.max(24,Math.min(centered,availableRight-badge.offsetWidth))+'px';
+    badge.style.left=Math.max(24,availableRight-badge.offsetWidth)+'px';
     badge.style.marginLeft='';
     badge.style.marginRight='';
     badge.style.flex='';
