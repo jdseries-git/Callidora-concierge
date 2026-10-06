@@ -504,7 +504,7 @@ function v1mpMaybeAutoTrack(){
           card.click();
         }catch(e){
           v1mpHideOverlay();
-          game?.hud?.message?.('RACE CONTROL · '+e.message,'yellow');
+          window.__game?.hud?.message?.('RACE CONTROL · '+e.message,'yellow');
         }
       },true);
     }
