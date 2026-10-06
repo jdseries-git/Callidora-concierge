@@ -944,7 +944,7 @@ function v1RtRoom(code) {
   let room = v1RealtimeRooms.get(code);
   if (!room) {
     room = {
-      code, players: new Map(), expectedCount: 0, status: "waiting",
+      code, players: new Map(), expectedCount: 0, status: "waiting", armed: false,
       trackId: null, laps: 0, trackLength: 0, startAt: 0,
       finishOrder: [], lastBroadcast: 0, createdAt: Date.now(),
     };
@@ -986,7 +986,7 @@ function v1RtSnapshot(room) {
   };
 }
 function v1RtMaybeStart(room) {
-  if (room.status !== "waiting") return;
+  if (room.status !== "waiting" || !room.armed) return;
   const ready = [...room.players.values()].filter(p => p.connected && p.ready).length;
   const needed = Math.max(1, room.expectedCount || ready);
   if (ready < needed) return;
@@ -1127,6 +1127,16 @@ v1Wss.on("connection", (ws, request) => {
       if (!room.trackId) room.trackId = String(msg.trackId || "unknown").slice(0, 50);
       if (!room.laps) room.laps = Math.max(1, Math.min(100, Number(msg.laps) || 5));
       if (!room.trackLength) room.trackLength = Math.max(100, Math.min(20000, Number(msg.trackLength) || 5000));
+      v1RtBroadcast(room, v1RtSnapshot(room));
+      v1RtMaybeStart(room);
+      return;
+    }
+    if (msg.type === "arm") {
+      room.armed = true;
+      room.expectedCount = Math.max(1, Math.min(24, Number(msg.expectedCount) || room.expectedCount || 1));
+      room.trackId = String(msg.trackId || room.trackId || "unknown").slice(0, 50);
+      room.laps = Math.max(1, Math.min(100, Number(msg.laps) || room.laps || 5));
+      room.trackLength = Math.max(100, Math.min(20000, Number(msg.trackLength) || room.trackLength || 5000));
       v1RtBroadcast(room, v1RtSnapshot(room));
       v1RtMaybeStart(room);
       return;
