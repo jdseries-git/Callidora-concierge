@@ -26,9 +26,13 @@ cat > dist/js/v1-online.js <<'JS'
 // and race-room lobby foundation. Kept separate from the race engine intentionally.
 const API = 'https://v1-league-online.floot.app/_api';
 const STORE = {
-  name: 'v1_legacy_name',
-  room: 'v1_room_code',
+  name: 'v1_session_legacy_name',
+  room: 'v1_session_room_code',
+  loginAt: 'v1_session_login_at',
 };
+const V1_IDLE_MS = 5 * 60 * 1000;
+let v1LastActivity = Date.now();
+let v1LoginPromise = null;
 
 const esc = (s='') => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const moneyTime = (ms) => {
@@ -38,8 +42,8 @@ const moneyTime = (ms) => {
   const sec = ((n%60000)/1000).toFixed(3).padStart(6,'0');
   return m + ':' + sec;
 };
-const legacyName = () => (localStorage.getItem(STORE.name)||'').trim();
-const roomCode = () => (localStorage.getItem(STORE.room)||'').trim().toUpperCase();
+const legacyName = () => (sessionStorage.getItem(STORE.name)||'').trim();
+const roomCode = () => (sessionStorage.getItem(STORE.room)||'').trim().toUpperCase();
 
 async function api(path, opts={}) {
   const r = await fetch(API + path, {
@@ -63,11 +67,11 @@ function root() {
 }
 function close() { root().innerHTML=''; }
 
-function shell(title, body, footer='') {
+function shell(title, body, footer='', opts={}) {
   root().innerHTML = `
     <div class="v1o-backdrop">
       <section class="v1o-panel" role="dialog" aria-modal="true">
-        <header><div><small>VELOCITÀ ONE · ONLINE</small><h2>${title}</h2></div><button class="v1o-x" id="v1o-x">×</button></header>
+        <header><div><small>VELOCITÀ ONE · DRIVER STATION</small><h2>${title}</h2></div>${opts.locked?'':'<button class="v1o-x" id="v1o-x">×</button>'}</header>
         <div class="v1o-body">${body}</div>
         ${footer ? '<footer>'+footer+'</footer>' : ''}
       </section>
@@ -76,39 +80,102 @@ function shell(title, body, footer='') {
 }
 
 async function ensurePlayer(force=false) {
-  let name = legacyName();
-  if (!name || force) {
-    shell('DRIVER PROFILE', `
-      <p class="v1o-muted">Enter your Second Life <strong>Legacy Name</strong>. This is the permanent name used for V1 rankings and race history.</p>
-      <label class="v1o-label">SL LEGACY NAME</label>
-      <input class="v1o-input" id="v1o-name" autocomplete="off" placeholder="example Resident" value="${esc(name)}">
-      <button class="v1o-btn" id="v1o-save">CREATE / LOAD DRIVER PROFILE</button>
-      <div class="v1o-status" id="v1o-status"></div>`);
-    return await new Promise(resolve => {
-      document.getElementById('v1o-save').onclick = async () => {
-        const value = document.getElementById('v1o-name').value.trim();
-        const status = document.getElementById('v1o-status');
-        if (!value) { status.textContent='Legacy Name is required.'; return; }
+  let name = force ? '' : legacyName();
+  if (!name) {
+    if (v1LoginPromise) return v1LoginPromise;
+    v1LoginPromise = new Promise(resolve => {
+      shell('DRIVER LOGIN', `
+        <div class="v1o-kioskmark">VELOCITÀ ONE</div>
+        <p class="v1o-muted">Sign in to this simulator with your Second Life <strong>Legacy Name</strong>. Your permanent V1 driver profile, results, and rankings will load automatically.</p>
+        <label class="v1o-label">SL LEGACY NAME</label>
+        <input class="v1o-input" id="v1o-name" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="example Resident">
+        <button class="v1o-btn" id="v1o-save">LOGIN TO V1</button>
+        <div class="v1o-status" id="v1o-status"></div>
+        <p class="v1o-kioskhelp">New driver? Your V1 profile will be created automatically.</p>`, '', {locked:true});
+      const input=document.getElementById('v1o-name');
+      const submit=async()=>{
+        const value=input.value.trim();
+        const status=document.getElementById('v1o-status');
+        if (!value) { status.textContent='Enter your SL Legacy Name to continue.'; return; }
         try {
-          status.textContent='Connecting…';
-          const data = await api('/v1-player',{method:'POST',body:JSON.stringify({legacyName:value})});
-          localStorage.setItem(STORE.name, data.player.legacy_name);
+          status.textContent='Loading driver profile…';
+          const data=await api('/v1-player',{method:'POST',body:JSON.stringify({legacyName:value})});
+          sessionStorage.setItem(STORE.name,data.player.legacy_name);
+          sessionStorage.setItem(STORE.loginAt,String(Date.now()));
+          v1LastActivity=Date.now();
+          v1LoginPromise=null;
           close();
           resolve(data.player.legacy_name);
+          v1ShowSignedInDriver();
+          const q=new URLSearchParams(location.search).get('v1room');
+          if(q) setTimeout(()=>multiplayer(),100);
         } catch(e) { status.textContent=e.message; }
       };
+      document.getElementById('v1o-save').onclick=submit;
+      input.addEventListener('keydown',e=>{ if(e.key==='Enter') submit(); });
+      setTimeout(()=>input.focus(),50);
     });
+    return v1LoginPromise;
   }
   try {
-    const data = await api('/v1-player',{method:'POST',body:JSON.stringify({legacyName:name})});
-    localStorage.setItem(STORE.name, data.player.legacy_name);
+    const data=await api('/v1-player',{method:'POST',body:JSON.stringify({legacyName:name})});
+    sessionStorage.setItem(STORE.name,data.player.legacy_name);
     return data.player.legacy_name;
   } catch(e) {
-    shell('ONLINE SERVICE', '<p>'+esc(e.message)+'</p><button class="v1o-btn" id="v1o-retry">RETRY</button>');
-    document.getElementById('v1o-retry').onclick=()=>ensurePlayer(true);
-    throw e;
+    sessionStorage.removeItem(STORE.name);
+    sessionStorage.removeItem(STORE.loginAt);
+    v1LoginPromise=null;
+    return ensurePlayer(true);
   }
 }
+
+function v1ShowSignedInDriver(){
+  const name=legacyName();
+  let badge=document.getElementById('v1-driver-session');
+  if(!name){ badge?.remove(); return; }
+  if(!badge){
+    badge=document.createElement('div');
+    badge.id='v1-driver-session';
+    document.body.appendChild(badge);
+  }
+  badge.innerHTML='<span>DRIVER</span><b>'+esc(name)+'</b><button type="button" id="v1-logout-mini">LOG OUT</button>';
+  document.getElementById('v1-logout-mini').onclick=()=>v1Logout('manual');
+}
+
+function v1Logout(reason='manual'){
+  clearInterval(pollTimer);
+  clearTimeout(leaderboardTimer);
+  try{ v1mp?.ws?.send(JSON.stringify({type:'leave'})); }catch{}
+  try{ v1mp?.ws?.close(); }catch{}
+  v1mp=null;
+  sessionStorage.removeItem(STORE.name);
+  sessionStorage.removeItem(STORE.room);
+  sessionStorage.removeItem(STORE.loginAt);
+  sessionStorage.removeItem('v1_multiplayer_config');
+  localStorage.removeItem('v1_legacy_name'); // remove legacy pre-kiosk persistence
+  localStorage.removeItem('v1_room_code');
+  v1LoginPromise=null;
+  const u=new URL(location.href);
+  u.searchParams.delete('v1room'); u.searchParams.delete('seed');
+  history.replaceState(null,'',u);
+  const game=window.__game;
+  if(game?.session) game.teardownSession?.();
+  if(game){ game.state='menu'; game.ui?.showMain?.(game.champ); }
+  v1ShowSignedInDriver();
+  shell(reason==='idle'?'SESSION EXPIRED':'DRIVER LOGGED OUT',
+    '<p class="v1o-muted">'+(reason==='idle'
+      ? 'This simulator was inactive for 5 minutes, so the previous driver was logged out for privacy.'
+      : 'This simulator is ready for the next driver.')+'</p>'+
+    '<button class="v1o-btn" id="v1o-next-login">DRIVER LOGIN</button>','',{locked:true});
+  document.getElementById('v1o-next-login').onclick=()=>{ close(); ensurePlayer(true); };
+}
+
+function v1MarkActivity(){ v1LastActivity=Date.now(); }
+['pointerdown','keydown','touchstart','gamepadconnected'].forEach(ev=>addEventListener(ev,v1MarkActivity,{passive:true}));
+setInterval(()=>{
+  if(legacyName() && Date.now()-v1LastActivity>=V1_IDLE_MS) v1Logout('idle');
+},15000);
+
 
 async function profile() {
   const name = await ensurePlayer();
@@ -121,8 +188,8 @@ async function profile() {
       <div><b>${data.best_score||0}</b><span>BEST SCORE</span></div>
       <div><b>${moneyTime(data.fastest_lap_ms)}</b><span>FASTEST LAP</span></div>
     </div>
-    <button class="v1o-btn ghost" id="v1o-switch">CHANGE LEGACY NAME</button>`);
-  document.getElementById('v1o-switch').onclick=()=>ensurePlayer(true);
+    <button class="v1o-btn ghost" id="v1o-switch">LOG OUT OF THIS SIMULATOR</button>`);
+  document.getElementById('v1o-switch').onclick=()=>v1Logout('manual');
 }
 
 let leaderboardTimer=null;
@@ -157,7 +224,7 @@ async function multiplayer() {
   const name=await ensurePlayer();
   const codeFromUrl = new URLSearchParams(location.search).get('v1room');
   if (codeFromUrl) {
-    localStorage.setItem(STORE.room, codeFromUrl.toUpperCase());
+    sessionStorage.setItem(STORE.room, codeFromUrl.toUpperCase());
     return joinRoom(codeFromUrl.toUpperCase(), name);
   }
   shell('MULTIPLAYER', `
@@ -189,7 +256,7 @@ function createRoom(name) {
         laps:+document.getElementById('v1o-laps').value,
         maxPlayers:+document.getElementById('v1o-max').value
       })});
-      localStorage.setItem(STORE.room,data.code);
+      sessionStorage.setItem(STORE.room,data.code);
       openRoom(data.code,name);
     } catch(e){status.textContent=e.message;}
   };
@@ -204,7 +271,7 @@ async function joinRoom(code,name) {
   if(!code) return joinPrompt(name);
   try {
     await api('/v1-room-join',{method:'POST',body:JSON.stringify({code,legacyName:name})});
-    localStorage.setItem(STORE.room,code);
+    sessionStorage.setItem(STORE.room,code);
     openRoom(code,name);
   } catch(e) {
     shell('JOIN RACE','<p>'+esc(e.message)+'</p><button class="v1o-btn ghost" id="v1o-backmp">BACK</button>');
@@ -279,6 +346,7 @@ function injectMainButtons() {
   nav.appendChild(mk('MULTIPLAYER','Private races, invite links, and V1 hosted lobbies',multiplayer));
   nav.appendChild(mk('LIVE LEADERBOARD','Daily global rankings by SL Legacy Name',()=>leaderboard('daily')));
   nav.appendChild(mk('DRIVER PROFILE','Persistent V1 career record',profile));
+  nav.appendChild(mk('LOG OUT','End this driver session and reset the simulator',()=>v1Logout('manual')));
 }
 
 const obs=new MutationObserver(()=>{
@@ -289,9 +357,11 @@ const obs=new MutationObserver(()=>{
 });
 obs.observe(document.documentElement,{subtree:true,childList:true,attributes:true,attributeFilter:['class']});
 addEventListener('DOMContentLoaded',()=>{
+  localStorage.removeItem('v1_legacy_name');
+  localStorage.removeItem('v1_room_code');
   injectMainButtons();
-  const q=new URLSearchParams(location.search).get('v1room');
-  if(q) setTimeout(()=>multiplayer(),1200);
+  v1ShowSignedInDriver();
+  setTimeout(()=>ensurePlayer(false),350);
 });
 
 // ===== REAL-TIME ON-TRACK MULTIPLAYER =====
@@ -565,6 +635,11 @@ cat >> dist/css/menus.css <<'CSS'
 .v1o-stats div{padding:18px;background:#0d0c0b;border:1px solid rgba(255,255,255,.07)}.v1o-stats b{display:block;font-size:24px}.v1o-stats span{display:block;margin-top:5px;font:800 9px var(--mono,monospace);color:#999;letter-spacing:.12em}
 .v1o-roomhead{display:flex;justify-content:space-between;gap:20px;align-items:flex-start}.v1o-roomhead small{color:#B88B6C}.v1o-roomhead h3{font-size:24px;margin:3px 0}.v1o-roomhead div:last-child{text-align:right}.v1o-roomhead span{display:block;color:#999;font-size:12px;margin-top:4px}
 .v1o-copyrow{display:flex;gap:8px}.v1o-rosterlabel{margin:24px 0 8px}.v1o-roster{list-style:none;padding:0;margin:0;border-top:1px solid rgba(255,255,255,.08)}.v1o-roster li{display:flex;justify-content:space-between;padding:11px 4px;border-bottom:1px solid rgba(255,255,255,.06)}.v1o-roster b{font-size:10px;color:#D5B48B}
+.v1o-kioskmark{font:900 clamp(30px,6vw,54px)/1 var(--font-display,Arial,sans-serif);letter-spacing:.12em;margin-bottom:18px;color:#D5B48B}
+.v1o-kioskhelp{margin:14px 0 0;color:#777;font-size:11px;text-align:center}
+#v1-driver-session{position:fixed;right:18px;top:16px;z-index:15000;display:flex;align-items:center;gap:10px;padding:8px 10px;background:rgba(8,9,9,.92);border:1px solid rgba(213,180,139,.3);color:#fff;font:700 10px var(--mono,monospace);letter-spacing:.08em}
+#v1-driver-session span{color:#8f877e}#v1-driver-session b{color:#D5B48B;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#v1-driver-session button{border:1px solid #5c3827;background:#19120e;color:#fff;padding:6px 8px;font:800 9px var(--mono,monospace);cursor:pointer}
 #v1mp-overlay{position:fixed;inset:0;z-index:19000;display:none;place-content:center;text-align:center;pointer-events:none;background:rgba(0,0,0,.32);color:#fff;text-shadow:0 3px 18px #000}
 .v1mp-big{font:900 clamp(44px,10vw,120px)/.9 var(--font-display,Arial,sans-serif);font-style:italic;letter-spacing:-.04em}
 .v1mp-sub{margin-top:14px;font:800 12px var(--mono,monospace);letter-spacing:.18em;color:#D5B48B}
