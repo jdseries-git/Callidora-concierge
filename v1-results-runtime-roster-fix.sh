@@ -288,8 +288,10 @@ async function multiplayer() {
 function createRoom(name) {
   shell('CREATE PRIVATE RACE', `
     <label class="v1o-label">RACE TITLE</label><input class="v1o-input" id="v1o-title" value="Private Race">
-    <label class="v1o-label">TRACK ID</label><input class="v1o-input" id="v1o-track" value="spa">
-    <div class="v1o-grid2"><div><label class="v1o-label">LAPS</label><input class="v1o-input" id="v1o-laps" type="number" min="1" max="100" value="5"></div>
+    <label class="v1o-label">CIRCUIT</label>
+    <select class="v1o-input" id="v1o-track"><option value="melbourne">Melbourne · Lakeside International Raceway</option><option value="shanghai">Shanghai · Jade River Circuit</option><option value="suzuka">Suzuka · Crossover Park Raceway</option><option value="bahrain">Sakhir · Desert Star Circuit</option><option value="jeddah">Jeddah · Seawall Boulevard Circuit</option><option value="miami">Miami · Palm Basin Autodrome</option><option value="montreal">Montreal · Isle Park Circuit</option><option value="monaco">Monaco · Harbour Terrace Street Circuit</option><option value="barcelona">Barcelona · Terra Alta Circuit</option><option value="spielberg">Spielberg · Highland Crown Raceway</option><option value="silverstone">Silverstone · Northgate Aerodrome Circuit</option><option value="spa" selected>Spa · Greenwood Forest Circuit</option><option value="hungaroring">Budapest · Danube Basin Raceway</option><option value="zandvoort">Zandvoort · North Dune Circuit</option><option value="monza">Monza · Royal Park Speedway</option><option value="madrid">Madrid · Meseta Arena Circuit</option><option value="baku">Baku · Caspian Gate Street Circuit</option><option value="singapore">Singapore · Bayfront Night Circuit</option><option value="austin">Austin · Lone Hill Circuit</option><option value="mexico">Mexico City · Altiplano Speedway</option><option value="interlagos">São Paulo · Serra Sul Autodrome</option><option value="lasvegas">Las Vegas · Neon Boulevard Circuit</option><option value="lusail">Lusail · Dune Crescent Circuit</option><option value="yasmarina">Abu Dhabi · Gulf Pearl Circuit</option></select>
+    <p class="v1o-kioskhelp" style="text-align:left">The host-selected circuit and lap count are locked for every invited driver.</p>
+    <div class="v1o-grid2"><div><label class="v1o-label">LAPS</label><input class="v1o-input" id="v1o-laps" type="number" min="1" max="100" value="3"></div>
     <div><label class="v1o-label">MAX PLAYERS</label><input class="v1o-input" id="v1o-max" type="number" min="2" max="24" value="12"></div></div>
     <button class="v1o-btn" id="v1o-make">CREATE RACE ROOM</button><div class="v1o-status" id="v1o-status"></div>`);
   document.getElementById('v1o-make').onclick=async()=>{
@@ -435,11 +437,18 @@ function v1LegacyRaceCode(name){
 }
 
 function launchMultiplayerRace(data,name){
+  if(v1mp?.ws){
+    try{v1mp.ws.onmessage=null;v1mp.ws.close();}catch{}
+  }
+  v1mp=null;
+  v1mpHideOverlay();
   const r=data.room;
+  const isHost=data.members.some(m=>m.is_host && m.legacy_name?.toLowerCase()===name.toLowerCase());
   const config={
     roomCode:r.code,
     legacyName:name,
     expectedCount:data.members.length,
+    isHost,
     trackId:r.track_id,
     laps:r.laps,
     seed:v1mpSeed(r.code),
@@ -663,6 +672,7 @@ function v1mpTick(){
 
   if(!v1mp.readySent){
     v1mp.readySent=true;
+    game.session.setCarLodMode?.('forced-full');
     if(game.session?.player?.driver){
       game.session.player.driver.code=v1LegacyRaceCode(cfg.legacyName);
       game.session.player.driver.name=cfg.legacyName;
@@ -673,6 +683,12 @@ function v1mpTick(){
       type:'ready', expectedCount:cfg.expectedCount, trackId:cfg.trackId, laps:cfg.laps,
       trackLength:game.circuit.length, driverId:game.session.player?.driver?.id||game.ui?.sel?.driverId||null
     }));
+    if(cfg.isHost){
+      v1mp.ws.send(JSON.stringify({
+        type:'arm', expectedCount:cfg.expectedCount, trackId:cfg.trackId,
+        laps:cfg.laps, trackLength:game.circuit.length
+      }));
+    }
   }
 
   for(const [key,remote] of v1mp.latest){
