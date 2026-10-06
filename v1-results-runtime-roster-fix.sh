@@ -289,9 +289,7 @@ async function multiplayer() {
 function createRoom(name) {
   shell('CREATE PRIVATE RACE', `
     <label class="v1o-label">RACE TITLE</label><input class="v1o-input" id="v1o-title" value="Private Race">
-    <label class="v1o-label">CIRCUIT</label>
-    <select class="v1o-input" id="v1o-track"><option value="melbourne">Melbourne · Lakeside International Raceway</option><option value="shanghai">Shanghai · Jade River Circuit</option><option value="suzuka">Suzuka · Crossover Park Raceway</option><option value="bahrain">Sakhir · Desert Star Circuit</option><option value="jeddah">Jeddah · Seawall Boulevard Circuit</option><option value="miami">Miami · Palm Basin Autodrome</option><option value="montreal">Montreal · Isle Park Circuit</option><option value="monaco">Monaco · Harbour Terrace Street Circuit</option><option value="barcelona">Barcelona · Terra Alta Circuit</option><option value="spielberg">Spielberg · Highland Crown Raceway</option><option value="silverstone">Silverstone · Northgate Aerodrome Circuit</option><option value="spa" selected>Spa · Greenwood Forest Circuit</option><option value="hungaroring">Budapest · Danube Basin Raceway</option><option value="zandvoort">Zandvoort · North Dune Circuit</option><option value="monza">Monza · Royal Park Speedway</option><option value="madrid">Madrid · Meseta Arena Circuit</option><option value="baku">Baku · Caspian Gate Street Circuit</option><option value="singapore">Singapore · Bayfront Night Circuit</option><option value="austin">Austin · Lone Hill Circuit</option><option value="mexico">Mexico City · Altiplano Speedway</option><option value="interlagos">São Paulo · Serra Sul Autodrome</option><option value="lasvegas">Las Vegas · Neon Boulevard Circuit</option><option value="lusail">Lusail · Dune Crescent Circuit</option><option value="yasmarina">Abu Dhabi · Gulf Pearl Circuit</option></select>
-    <p class="v1o-kioskhelp" style="text-align:left">The host-selected circuit and lap count are locked for every invited driver.</p>
+    <p class="v1o-muted">Create the room here. After the lobby starts, you’ll choose your team and then select the circuit from V1’s full visual circuit-map screen.</p>
     <div class="v1o-grid2"><div><label class="v1o-label">LAPS</label><input class="v1o-input" id="v1o-laps" type="number" min="1" max="100" value="3"></div>
     <div><label class="v1o-label">MAX PLAYERS</label><input class="v1o-input" id="v1o-max" type="number" min="2" max="24" value="12"></div></div>
     <button class="v1o-btn" id="v1o-make">CREATE RACE ROOM</button><div class="v1o-status" id="v1o-status"></div>`);
@@ -301,7 +299,7 @@ function createRoom(name) {
       status.textContent='Creating lobby…';
       const data=await api('/v1-room',{method:'POST',body:JSON.stringify({
         legacyName:name,title:document.getElementById('v1o-title').value,
-        trackId:document.getElementById('v1o-track').value,
+        trackId:'pending',
         laps:+document.getElementById('v1o-laps').value,
         maxPlayers:+document.getElementById('v1o-max').value
       })});
@@ -338,7 +336,7 @@ async function openRoom(code,name) {
       const host=data.members.find(m=>m.is_host)?.legacy_name?.toLowerCase()===name.toLowerCase();
       const invite=location.origin+location.pathname+'?v1room='+encodeURIComponent(code);
       shell('RACE LOBBY · '+esc(code), `
-        <div class="v1o-roomhead"><div><small>${esc(r.kind).toUpperCase()}</small><h3>${esc(r.title)}</h3></div><div><small>HOST-SELECTED CIRCUIT</small><b>${esc(r.track_id).toUpperCase()}</b><span>${r.laps} LAPS · LOCKED FOR ALL DRIVERS</span></div></div>
+        <div class="v1o-roomhead"><div><small>${esc(r.kind).toUpperCase()}</small><h3>${esc(r.title)}</h3></div><div><small>HOST-SELECTED CIRCUIT</small><b>${r.track_id==='pending'?'SELECT ON TRACK MAP':esc(r.track_id).toUpperCase()}</b><span>${r.laps} LAPS · LOCKED FOR ALL DRIVERS</span></div></div>
         <label class="v1o-label">INVITE LINK</label>
         <div class="v1o-copyrow"><input class="v1o-input" id="v1o-link" readonly value="${esc(invite)}"><button class="v1o-btn mini" id="v1o-copy">COPY</button></div>
         <h4 class="v1o-rosterlabel">DRIVERS · ${data.members.length}/${r.max_players}</h4>
@@ -450,7 +448,7 @@ function launchMultiplayerRace(data,name){
     legacyName:name,
     expectedCount:data.members.length,
     isHost,
-    trackId:r.track_id,
+    trackId:r.track_id==='pending'?null:r.track_id,
     laps:r.laps,
     seed:v1mpSeed(r.code),
     previousQuali:window.__game?.ui?.settings?.quali,
@@ -481,12 +479,70 @@ function v1mpMaybeAutoTrack(){
   if(!cfg) return;
   const screen=document.getElementById('screen-track');
   if(!screen?.classList.contains('active')) return;
-
-  // Multiplayer circuit selection is HOST-AUTHORITATIVE.
-  // Guests never choose a circuit locally; Race Control applies the room circuit.
-  screen.style.visibility='hidden';
-  const wanted=String(cfg.trackId||'').trim().toLowerCase();
   const cards=[...screen.querySelectorAll('.track-card[data-t]')];
+
+  if(cfg.isHost && !cfg.trackId){
+    // Host chooses on the game's normal visual circuit-map screen.
+    screen.style.visibility='visible';
+    if(!screen.dataset.v1HostTrackBound){
+      screen.dataset.v1HostTrackBound='1';
+      screen.addEventListener('click',async(ev)=>{
+        const card=ev.target.closest?.('.track-card[data-t]');
+        if(!card || card.dataset.v1Confirmed==='1') return;
+        ev.preventDefault();
+        ev.stopImmediatePropagation();
+        const chosen=String(card.dataset.t||'').toLowerCase();
+        try{
+          v1mpOverlay('LOCKING CIRCUIT','Applying host selection to every driver…');
+          await api('/v1-room-start',{method:'POST',body:JSON.stringify({
+            code:cfg.roomCode,legacyName:cfg.legacyName,trackId:chosen,laps:cfg.laps
+          })});
+          cfg.trackId=chosen;
+          sessionStorage.setItem('v1_multiplayer_config',JSON.stringify(cfg));
+          card.dataset.v1Confirmed='1';
+          v1mpHideOverlay();
+          card.click();
+        }catch(e){
+          v1mpHideOverlay();
+          game?.hud?.message?.('RACE CONTROL · '+e.message,'yellow');
+        }
+      },true);
+    }
+    return;
+  }
+
+  if(!cfg.trackId){
+    // Guest waits at the track screen while Race Control watches for the host's map choice.
+    screen.style.visibility='hidden';
+    if(!cfg._waitingForHostTrack){
+      cfg._waitingForHostTrack=true;
+      sessionStorage.setItem('v1_multiplayer_config',JSON.stringify(cfg));
+      v1mpOverlay('WAITING FOR HOST','The host is selecting the circuit…');
+      const wait=async()=>{
+        const live=v1mpConfig();
+        if(!live || live.trackId) return;
+        try{
+          const data=await api('/v1-room?code='+encodeURIComponent(live.roomCode));
+          const tid=String(data.room?.track_id||'').toLowerCase();
+          if(tid && tid!=='pending'){
+            live.trackId=tid;
+            live.laps=Number(data.room.laps)||live.laps;
+            live._waitingForHostTrack=false;
+            sessionStorage.setItem('v1_multiplayer_config',JSON.stringify(live));
+            v1mpHideOverlay();
+            requestAnimationFrame(v1mpMaybeAutoTrack);
+            return;
+          }
+        }catch{}
+        setTimeout(wait,600);
+      };
+      wait();
+    }
+    return;
+  }
+
+  screen.style.visibility='hidden';
+  const wanted=String(cfg.trackId).trim().toLowerCase();
   const card=cards.find(x=>String(x.dataset.t||'').toLowerCase()===wanted);
   if(card && !card.dataset.v1AutoClicked){
     card.dataset.v1AutoClicked='1';
@@ -522,8 +578,17 @@ function v1mpIngestRemote(entry,state){
     v:entry.phys.v||0, steer:entry.phys.steer||0, wheelSpin:entry.wheelSpin||0
   };
   entry._v1NetFrom={...current};
+  const nx=Number(state.x)||0, nz=Number(state.z)||0;
+  const c=window.__game?.circuit;
+  const idx=Math.max(0,Math.min((c?.N||1)-1,Number(state.sampleIdx)||0));
+  let groundY=0;
+  if(c?.heightAt && c?.samples?.[idx]){
+    const sm=c.samples[idx];
+    const along=(nx-sm.p.x)*sm.t.x+(nz-sm.p.z)*sm.t.z;
+    groundY=c.heightAt(idx+along/c.ds);
+  }
   entry._v1NetTo={
-    x:Number(state.x)||0,y:Number(state.y)||0,z:Number(state.z)||0,
+    x:nx,y:groundY,z:nz,
     heading:Number(state.heading)||0,v:Number(state.v)||0,
     steer:Number(state.steer)||0,wheelSpin:Number(state.wheelSpin)||0
   };
@@ -555,6 +620,7 @@ function v1mpRenderRemote(entry){
   };
   entry._v1Visual=pose;
   entry.mesh.position.set(pose.x,pose.y,pose.z);
+  entry.renderY=pose.y;
   entry.mesh.rotation.y=pose.heading;
   entry.mesh.visible=true;
   if(entry.carHandle?.root) entry.carHandle.root.visible=true;
