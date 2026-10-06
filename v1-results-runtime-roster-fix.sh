@@ -155,7 +155,7 @@ function v1PositionDriverSession(){
     badge.style.position='fixed';
     badge.style.right='auto';
     // Match the visual center of the italic MAIN MENU glyphs (their CSS line box sits slightly low).
-    badge.style.top=Math.max(16,tr.top+(tr.height-badge.offsetHeight)/2-9)+'px';
+    badge.style.top=Math.max(16,tr.bottom-badge.offsetHeight)+'px';
     // Place the driver/logout control in the target slot immediately left of MAIN MENU.
     const availableRight=tr.left-gap;
     badge.style.left=Math.max(24,availableRight-badge.offsetWidth)+'px';
