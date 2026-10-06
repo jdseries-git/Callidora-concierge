@@ -133,22 +133,23 @@ async function ensurePlayer(force=false) {
 function v1PositionDriverSession(){
   const badge=document.getElementById('v1-driver-session');
   if(!badge) return;
-  const main=document.getElementById('screen-main');
-  const header=main?.querySelector('.menu-header');
-  const title=header?.querySelector('.title');
 
-  // Permanent header anchor. Do NOT recalculate from viewport coordinates.
-  // This prevents menu animations, mutations, and screen changes from shifting it.
-  if(header && title){
-    if(badge.parentElement!==header) header.appendChild(badge);
-    badge.style.position='absolute';
-    badge.style.left='auto';
-    badge.style.top='auto';
-    badge.style.bottom='10px';
-    badge.style.right=(title.offsetWidth + 120)+'px';
-    badge.style.margin='0';
-    badge.style.transform='none';
-  }
+  // Global locked control: keep it outside every individual screen so changing
+  // menu pages cannot hide or reposition it.
+  if(badge.parentElement!==document.body) document.body.appendChild(badge);
+  badge.style.position='fixed';
+  badge.style.left='auto';
+  badge.style.top='53px';
+  badge.style.right='342px';
+  badge.style.bottom='auto';
+  badge.style.margin='0';
+  badge.style.transform='none';
+  badge.style.zIndex='10050';
+
+  // Visible throughout menu/navigation pages; hide only during active driving.
+  const race=document.getElementById('screen-race');
+  const driving=!!race?.classList.contains('active');
+  badge.style.display=driving?'none':'flex';
 }
 function v1ShowSignedInDriver(){
   const name=legacyName();
