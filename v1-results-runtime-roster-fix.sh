@@ -136,28 +136,33 @@ function v1PositionDriverSession(){
   const header=main?.querySelector('.menu-header');
   const title=header?.querySelector('.title');
 
-  // Undo the previous title-positioning experiment completely.
+  // MAIN MENU is never moved. Only place the driver box in the empty area to its left.
   if(title){
     title.style.position='';
     title.style.left='';
     title.style.right='';
     title.style.top='';
     title.style.transform='';
+    title.style.marginLeft='';
+    title.style.flex='';
   }
 
   if(main?.classList.contains('active') && header && title){
-    // Put the driver controls INTO the existing flex header, immediately before MAIN MENU.
-    // The game's own .title { margin-left:auto } keeps MAIN MENU fully visible on the right.
-    if(badge.parentElement!==header) header.insertBefore(badge,title);
-    badge.style.position='static';
-    badge.style.left='';
-    badge.style.right='';
-    badge.style.top='';
-    badge.style.marginLeft='auto';
-    badge.style.marginRight='32px';
-    badge.style.flex='0 0 auto';
-    title.style.marginLeft='0';
-    title.style.flex='0 0 auto';
+    if(badge.parentElement!==document.body) document.body.appendChild(badge);
+    const hr=header.getBoundingClientRect();
+    const tr=title.getBoundingClientRect();
+    const gap=48;
+    badge.style.position='fixed';
+    badge.style.right='auto';
+    badge.style.top=Math.max(16,hr.top+(hr.height-badge.offsetHeight)/2)+'px';
+    // Center the badge in the available empty header area left of MAIN MENU.
+    const availableLeft=hr.left+24;
+    const availableRight=tr.left-gap;
+    const centered=availableLeft+Math.max(0,(availableRight-availableLeft-badge.offsetWidth)/2);
+    badge.style.left=Math.max(24,Math.min(centered,availableRight-badge.offsetWidth))+'px';
+    badge.style.marginLeft='';
+    badge.style.marginRight='';
+    badge.style.flex='';
   } else {
     if(badge.parentElement!==document.body) document.body.appendChild(badge);
     badge.style.position='fixed';
@@ -167,10 +172,6 @@ function v1PositionDriverSession(){
     badge.style.marginLeft='';
     badge.style.marginRight='';
     badge.style.flex='';
-    if(title){
-      title.style.marginLeft='';
-      title.style.flex='';
-    }
   }
 }
 function v1ShowSignedInDriver(){
