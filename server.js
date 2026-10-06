@@ -1082,7 +1082,7 @@ function v1RtApplyState(room, player, raw) {
     const target = player.startDistance + Math.max(1, room.laps) * Math.max(100, room.trackLength);
     if (totalDist >= target) v1RtFinish(room, player);
   }
-  if (now - room.lastBroadcast >= 30) {
+  if (now - room.lastBroadcast >= 20) {
     room.lastBroadcast = now;
     v1RtBroadcast(room, v1RtSnapshot(room));
   }
