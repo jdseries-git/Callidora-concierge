@@ -22,6 +22,7 @@ node --check dist/js/ui.js
 
 # ===== V1 ONLINE LAYER =====
 cat > dist/js/v1-online.js <<'JS'
+import { buildNameTag } from './car.js';
 // Velocita One online layer: persistent SL Legacy Name profiles, live leaderboard,
 // and race-room lobby foundation. Kept separate from the race engine intentionally.
 const API = 'https://v1-league-online.floot.app/_api';
@@ -507,39 +508,78 @@ function v1mpMakeRemoteStub(entry){
   entry.phys.step=()=>({crossedSF:0,wrongWay:false,wallHit:0,shifted:0});
 }
 
-function v1mpApplyRemote(entry,state){
+function v1mpIngestRemote(entry,state){
   if(!entry?.phys || !state) return;
+  const stamp=Number(state.timestamp)||0;
+  if(entry._v1LastNetStamp===stamp) return;
+  entry._v1LastNetStamp=stamp;
+
+  const current=entry._v1Visual || {
+    x:entry.mesh?.position.x ?? entry.phys.pos.x,
+    y:entry.mesh?.position.y ?? entry.phys.pos.y,
+    z:entry.mesh?.position.z ?? entry.phys.pos.z,
+    heading:entry.mesh?.rotation.y ?? entry.phys.heading,
+    v:entry.phys.v||0, steer:entry.phys.steer||0, wheelSpin:entry.wheelSpin||0
+  };
+  entry._v1NetFrom={...current};
+  entry._v1NetTo={
+    x:Number(state.x)||0,y:Number(state.y)||0,z:Number(state.z)||0,
+    heading:Number(state.heading)||0,v:Number(state.v)||0,
+    steer:Number(state.steer)||0,wheelSpin:Number(state.wheelSpin)||0
+  };
+  entry._v1NetAt=performance.now();
+
+  // Authoritative race state updates once per network packet.
   const p=entry.phys;
-  const alpha=.42;
-  p.pos.x += (state.x-p.pos.x)*alpha;
-  p.pos.y += (state.y-p.pos.y)*alpha;
-  p.pos.z += (state.z-p.pos.z)*alpha;
-  const da=Math.atan2(Math.sin(state.heading-p.heading),Math.cos(state.heading-p.heading));
-  p.heading += da*alpha;
-  p.v=Number(state.v)||0;
-  p.steer=Number(state.steer)||0;
+  p.pos.x=entry._v1NetTo.x; p.pos.y=entry._v1NetTo.y; p.pos.z=entry._v1NetTo.z;
+  p.heading=entry._v1NetTo.heading; p.v=entry._v1NetTo.v; p.steer=entry._v1NetTo.steer;
   p.sampleIdx=Number(state.sampleIdx)||0;
   p.totalDist=Number(state.totalDist)||0;
   entry.lap=state.lap ?? entry.lap;
-  entry.wheelSpin=Number(state.wheelSpin)||entry.wheelSpin||0;
-  entry.dnf=false;
-  entry.finished=false;
-  p.disabled=false;
+  entry.wheelSpin=entry._v1NetTo.wheelSpin;
+  entry.dnf=false; entry.finished=false; p.disabled=false;
+}
 
-  // RaceSession.render() draws from interpolation snapshots, not directly from phys.
-  // Keep those snapshots synced to the network pose so the remote HUMAN car
-  // cannot be overwritten back to its old AI/grid position on the next render frame.
-  for(const snap of [entry.renderPrev,entry.renderCurr,entry.renderPose]){
-    if(!snap) continue;
-    snap.x=p.pos.x; snap.y=p.pos.y; snap.z=p.pos.z; snap.heading=p.heading;
-    snap.v=p.v; snap.steer=p.steer; snap.wheelSpin=entry.wheelSpin;
+function v1mpRenderRemote(entry){
+  if(!entry?.mesh || !entry._v1NetTo) return;
+  const a=entry._v1NetFrom||entry._v1NetTo, b=entry._v1NetTo;
+  // Intentionally render about one packet behind (~80ms) to remove visible
+  // 20Hz network stepping while still feeling immediate in a racing context.
+  const t=Math.max(0,Math.min(1,(performance.now()-(entry._v1NetAt||0))/80));
+  const lerp=(x,y)=>x+(y-x)*t;
+  const dh=Math.atan2(Math.sin(b.heading-a.heading),Math.cos(b.heading-a.heading));
+  const pose={
+    x:lerp(a.x,b.x), y:lerp(a.y,b.y), z:lerp(a.z,b.z),
+    heading:a.heading+dh*t, v:lerp(a.v,b.v),
+    steer:lerp(a.steer,b.steer), wheelSpin:lerp(a.wheelSpin,b.wheelSpin)
+  };
+  entry._v1Visual=pose;
+  entry.mesh.position.set(pose.x,pose.y,pose.z);
+  entry.mesh.rotation.y=pose.heading;
+  entry.mesh.visible=true;
+  if(entry.carHandle?.root) entry.carHandle.root.visible=true;
+  for(const k of ['fl','fr','rl','rr']){
+    const w=entry.wheels?.[k];
+    if(!w) continue;
+    w.rotation.x=pose.wheelSpin;
+    if(k==='fl'||k==='fr') w.rotation.y=pose.steer;
   }
-  if(entry.mesh){
-    entry.mesh.position.set(p.pos.x,p.pos.y,p.pos.z);
-    entry.mesh.rotation.y=p.heading;
-    entry.mesh.visible=true;
-    entry.carHandle?.root && (entry.carHandle.root.visible=true);
-  }
+}
+
+function v1mpPatchSessionRender(game){
+  const session=game?.session;
+  if(!session || session._v1NetworkRenderPatched) return;
+  session._v1NetworkRenderPatched=true;
+  const original=session.render.bind(session);
+  session.render=(alpha)=>{
+    original(alpha);
+    // Apply remote-human visuals AFTER the game's interpolation pass so the
+    // local renderer can never overwrite the network car with its old AI pose.
+    if(!v1mp) return;
+    for(const [key,entry] of v1mp.remoteEntries){
+      if(v1mp.latest.get(key)?.state) v1mpRenderRemote(entry);
+    }
+  };
 }
 
 function v1mpAssignRemoteEntries(game,snapshot){
@@ -559,6 +599,21 @@ function v1mpAssignRemoteEntries(game,snapshot){
         if(entry.driver){
           entry.driver.code=v1LegacyRaceCode(remote.legacyName);
           entry.driver.name=remote.legacyName;
+        }
+        // Nametag text is baked into a canvas texture at car creation, so
+        // changing driver.code alone is not enough. Rebuild it for the human.
+        if(entry.mesh && entry.team && entry.driver){
+          try{
+            if(entry.tag){
+              entry.mesh.remove(entry.tag);
+              entry.tag.material?.map?.dispose?.();
+              entry.tag.material?.dispose?.();
+            }
+            entry.tag=buildNameTag(entry.driver,entry.team);
+            entry.tag.position.y=1.6;
+            entry.tag.visible=false;
+            entry.mesh.add(entry.tag);
+          }catch(e){ console.warn('V1 nametag rebuild failed',e); }
         }
         entry._v1LegacyName=remote.legacyName;
         entry.dnf=false;
@@ -618,13 +673,13 @@ function v1mpConnect(game,cfg){
       for(const p of msg.players||[]) if(p.state) v1mp.latest.set(p.legacyName.toLowerCase(),p);
       v1mpAssignRemoteEntries(game,msg);
       const mine=(msg.players||[]).find(p=>p.legacyName?.toLowerCase()===cfg.legacyName.toLowerCase());
-      if(mine?.position) game.hud?.message?.('LIVE POSITION · P'+mine.position,'');
+      if(mine?.position && game.session?.player) game.session.player.position=mine.position;
     }
     if(msg.type==='countdown'){
       const tick=()=>{
-        if(!v1mp) return;
+        if(!v1mp || v1mp.green) { v1mpHideOverlay(); return; }
         const left=Math.max(0,msg.startAt-Date.now());
-        if(left<=0){ v1mpOverlay('GO',''); return; }
+        if(left<=0){ v1mpHideOverlay(); return; }
         v1mpOverlay(String(Math.max(1,Math.ceil(left/1000))),'V1 OFFICIAL START');
         requestAnimationFrame(tick);
       };
@@ -668,6 +723,7 @@ function v1mpTick(){
   }
   if(game.state!=='race' || !game.session || !game.circuit) return;
   if(!v1mp) v1mpConnect(game,cfg);
+  v1mpPatchSessionRender(game);
   if(!v1mp?.ws || v1mp.ws.readyState!==1) return;
 
   if(!v1mp.readySent){
@@ -693,7 +749,7 @@ function v1mpTick(){
 
   for(const [key,remote] of v1mp.latest){
     const entry=v1mp.remoteEntries.get(key);
-    if(entry && remote.state) v1mpApplyRemote(entry,remote.state);
+    if(entry && remote.state) v1mpIngestRemote(entry,remote.state);
   }
 
   const now=performance.now();
