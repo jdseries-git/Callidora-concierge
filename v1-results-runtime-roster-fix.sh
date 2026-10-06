@@ -429,6 +429,11 @@ function v1mpSeed(code){
   return h>>>0;
 }
 
+function v1LegacyRaceCode(name){
+  const clean=String(name||'').trim().replace(/\s+Resident$/i,'').replace(/[^a-z0-9]/gi,'');
+  return (clean.slice(0,3)||'V1').toUpperCase().padEnd(3,'X');
+}
+
 function launchMultiplayerRace(data,name){
   const r=data.room;
   const config={
@@ -542,6 +547,11 @@ function v1mpAssignRemoteEntries(game,snapshot){
       if(entry){
         v1mp.remoteEntries.set(key,entry);
         used.add(entry);
+        if(entry.driver){
+          entry.driver.code=v1LegacyRaceCode(remote.legacyName);
+          entry.driver.name=remote.legacyName;
+        }
+        entry._v1LegacyName=remote.legacyName;
         entry.dnf=false;
         entry.finished=false;
         entry.phys.disabled=false;
@@ -653,6 +663,11 @@ function v1mpTick(){
 
   if(!v1mp.readySent){
     v1mp.readySent=true;
+    if(game.session?.player?.driver){
+      game.session.player.driver.code=v1LegacyRaceCode(cfg.legacyName);
+      game.session.player.driver.name=cfg.legacyName;
+      game.session.player._v1LegacyName=cfg.legacyName;
+    }
     game.hud?.hideSessionReady?.();
     v1mp.ws.send(JSON.stringify({
       type:'ready', expectedCount:cfg.expectedCount, trackId:cfg.trackId, laps:cfg.laps,
