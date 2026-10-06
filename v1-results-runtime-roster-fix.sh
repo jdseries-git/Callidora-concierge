@@ -140,7 +140,7 @@ function v1PositionDriverSession(){
   badge.style.position='fixed';
   badge.style.left='auto';
   badge.style.top='53px';
-  badge.style.right='342px';
+  badge.style.right='405px';
   badge.style.bottom='auto';
   badge.style.margin='0';
   badge.style.transform='none';
