@@ -133,27 +133,44 @@ function v1PositionDriverSession(){
   const badge=document.getElementById('v1-driver-session');
   if(!badge) return;
   const main=document.getElementById('screen-main');
-  const title=main?.querySelector('.menu-header .title');
-  if(main?.classList.contains('active') && title){
-    const header=title.closest('.menu-header');
-    const hr=header?.getBoundingClientRect();
-    const gap=40;
-    // Lay the header out explicitly: driver controls first, then MAIN MENU.
-    // This guarantees the title begins AFTER the logout area instead of sitting underneath it.
-    const badgeLeft=Math.max(24,(hr?.left||0)+24);
-    badge.style.left=badgeLeft+'px';
-    badge.style.top=Math.max(16,(hr?.top||0)+((hr?.height||title.offsetHeight)-badge.offsetHeight)/2)+'px';
-    badge.style.right='auto';
-    const titleLeft=badgeLeft+badge.offsetWidth+gap;
-    title.style.position='fixed';
-    title.style.left=titleLeft+'px';
-    title.style.right='auto';
-    title.style.top=Math.max(0,(hr?.top||0)+((hr?.height||title.offsetHeight)-title.offsetHeight)/2)+'px';
-    title.style.transform='none';
+  const header=main?.querySelector('.menu-header');
+  const title=header?.querySelector('.title');
+
+  // Undo the previous title-positioning experiment completely.
+  if(title){
+    title.style.position='';
+    title.style.left='';
+    title.style.right='';
+    title.style.top='';
+    title.style.transform='';
+  }
+
+  if(main?.classList.contains('active') && header && title){
+    // Put the driver controls INTO the existing flex header, immediately before MAIN MENU.
+    // The game's own .title { margin-left:auto } keeps MAIN MENU fully visible on the right.
+    if(badge.parentElement!==header) header.insertBefore(badge,title);
+    badge.style.position='static';
+    badge.style.left='';
+    badge.style.right='';
+    badge.style.top='';
+    badge.style.marginLeft='auto';
+    badge.style.marginRight='32px';
+    badge.style.flex='0 0 auto';
+    title.style.marginLeft='0';
+    title.style.flex='0 0 auto';
   } else {
+    if(badge.parentElement!==document.body) document.body.appendChild(badge);
+    badge.style.position='fixed';
     badge.style.left='auto';
     badge.style.right='18px';
     badge.style.top='16px';
+    badge.style.marginLeft='';
+    badge.style.marginRight='';
+    badge.style.flex='';
+    if(title){
+      title.style.marginLeft='';
+      title.style.flex='';
+    }
   }
 }
 function v1ShowSignedInDriver(){
@@ -667,7 +684,7 @@ cat >> dist/css/menus.css <<'CSS'
 .v1o-copyrow{display:flex;gap:8px}.v1o-rosterlabel{margin:24px 0 8px}.v1o-roster{list-style:none;padding:0;margin:0;border-top:1px solid rgba(255,255,255,.08)}.v1o-roster li{display:flex;justify-content:space-between;padding:11px 4px;border-bottom:1px solid rgba(255,255,255,.06)}.v1o-roster b{font-size:10px;color:#D5B48B}
 .v1o-kioskmark{font:900 clamp(30px,6vw,54px)/1 var(--font-display,Arial,sans-serif);letter-spacing:.12em;margin-bottom:18px;color:#D5B48B}
 .v1o-kioskhelp{margin:14px 0 0;color:#777;font-size:11px;text-align:center}
-#v1-driver-session{position:fixed;z-index:15000;display:flex;align-items:center;gap:12px;padding:8px 10px;background:rgba(8,9,9,.92);border:1px solid rgba(213,180,139,.3);color:#fff;font:700 10px var(--mono,monospace);letter-spacing:.08em;white-space:nowrap;transition:left .15s ease,top .15s ease}
+#v1-driver-session{position:fixed;z-index:15000;display:flex;align-items:center;gap:12px;padding:8px 10px;background:rgba(8,9,9,.92);border:1px solid rgba(213,180,139,.3);color:#fff;font:700 10px var(--mono,monospace);letter-spacing:.08em;white-space:nowrap}
 #v1-driver-session span{color:#8f877e}#v1-driver-session b{color:#D5B48B;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 #v1-driver-session button{border:1px solid #5c3827;background:#19120e;color:#fff;padding:6px 8px;font:800 9px var(--mono,monospace);cursor:pointer}
 #v1mp-overlay{position:fixed;inset:0;z-index:19000;display:none;place-content:center;text-align:center;pointer-events:none;background:rgba(0,0,0,.32);color:#fff;text-shadow:0 3px 18px #000}
