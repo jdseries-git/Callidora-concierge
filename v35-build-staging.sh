@@ -159,5 +159,6 @@ const fs=require('fs'),path=require('path');
 function walk(d){for(const n of fs.readdirSync(d)){const p=path.join(d,n);if(fs.statSync(p).isDirectory()){walk(p);continue;}if(!/\.(html|css|js)$/.test(n))continue;let s=fs.readFileSync(p,'utf8');s=s.replaceAll('1915 Collective by ARMONI','1915').replaceAll('THE 1915 COLLECTIVE · BY ARMONI','1915 · LIFE IN MOTION').replaceAll('1915 Collective','1915').replaceAll('THE 1915 COLLECTIVE','1915');fs.writeFileSync(p,s);}}
 walk('dist');
 NODE
+cat "$ROOT/v36-modern-cockpit.css" >> dist/css/style.css
 cp -a dist "$ROOT/dist"
 echo "V35 staging build assembled"
