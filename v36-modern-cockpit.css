@@ -1,0 +1,13 @@
+/* V36 modern Formula cockpit: lightweight visual pass, no extra render loop */
+#cockpit-view .cockpit-halo::before,#cockpit-view .cockpit-halo::after{width:19vw;height:45vh;bottom:-12vh;border-width:clamp(9px,1vw,15px);border-color:#101317;opacity:.9}
+#cockpit-view .cockpit-halo::before{left:-11vw}
+#cockpit-view .cockpit-halo::after{right:-11vw}
+#cockpit-view .cockpit-halo i{width:clamp(10px,1.05vw,17px);height:49vh;top:-2vh;background:linear-gradient(90deg,#070809,#343a40 43%,#0a0c0e 80%);filter:drop-shadow(2px 1px 3px #000)}
+#cockpit-view .cockpit-halo b{top:-27vh;width:73vw;height:35vh;border-width:clamp(10px,1.1vw,18px);border-color:#111417}
+#cockpit-view .cockpit-wheel{bottom:-8vh;width:min(38vw,510px);aspect-ratio:1.72;border-width:clamp(12px,1.6vw,23px);border-radius:24% 24% 40% 40%;background:repeating-linear-gradient(35deg,rgba(255,255,255,.018) 0 2px,transparent 2px 5px),linear-gradient(150deg,#292c2e,#090b0e 65%);box-shadow:inset 0 0 0 2px #815337,inset 0 7px 22px #030405,0 -8px 26px #000}
+#cockpit-view .cockpit-wheel .grip{background:repeating-linear-gradient(120deg,#101112 0 4px,#1d1e20 4px 7px);border:2px solid #292b2c}
+#cockpit-view .cockpit-wheel .wheel-top{background:#a8754d;box-shadow:0 0 8px #815337}
+#cockpit-view .cockpit-screen{bottom:5vh;width:min(24vw,325px);min-width:245px;border:4px solid #16191b;border-radius:10px;background:linear-gradient(#071015,#04080b);box-shadow:0 0 0 3px #64432e,inset 0 0 15px #000,0 7px 22px #000}
+#cockpit-view .cockpit-mirror{top:25vh;width:10vw;min-width:95px;height:4vh;min-height:26px;border-width:3px;border-radius:35% 45% 35% 45%;opacity:.88}
+#cockpit-view .cockpit-mirror.left{left:2vw}#cockpit-view .cockpit-mirror.right{right:2vw}
+@media(max-width:850px){#cockpit-view .cockpit-wheel{width:55vw}#cockpit-view .cockpit-screen{min-width:210px;width:32vw}#cockpit-view .cockpit-mirror{min-width:60px}}
